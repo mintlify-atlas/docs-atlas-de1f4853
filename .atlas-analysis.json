@@ -1,0 +1,147 @@
+{
+  "projectType": "saas",
+  "projectName": "CEMS",
+  "projectDescription": "Persistent memory system for AI coding assistants with cross-session context retention",
+  "theme": "aspen",
+  "primaryColor": "#8B5CF6",
+  "lightColor": "#A78BFA",
+  "darkColor": "#6D28D9",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/how-it-works",
+              "concepts/memory-types",
+              "concepts/search-pipeline",
+              "concepts/architecture"
+            ]
+          },
+          {
+            "group": "IDE Integration",
+            "pages": [
+              "integrations/claude-code",
+              "integrations/cursor",
+              "integrations/codex",
+              "integrations/goose"
+            ]
+          },
+          {
+            "group": "Using CEMS",
+            "pages": [
+              "guides/skills-commands",
+              "guides/cli-usage",
+              "guides/memory-management",
+              "guides/observer-daemon"
+            ]
+          },
+          {
+            "group": "Server Deployment",
+            "pages": [
+              "deployment/overview",
+              "deployment/docker-compose",
+              "deployment/configuration",
+              "deployment/user-management"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/maintenance",
+              "advanced/retrieval-tuning",
+              "advanced/mcp-integration",
+              "advanced/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication"
+            ]
+          },
+          {
+            "group": "Memory API",
+            "pages": [
+              "api/memory/add",
+              "api/memory/search",
+              "api/memory/get",
+              "api/memory/update",
+              "api/memory/forget",
+              "api/memory/list"
+            ]
+          },
+          {
+            "group": "Session API",
+            "pages": [
+              "api/session/summarize",
+              "api/session/profile",
+              "api/session/foundation"
+            ]
+          },
+          {
+            "group": "Admin API",
+            "pages": [
+              "api/admin/users",
+              "api/admin/teams"
+            ]
+          },
+          {
+            "group": "MCP Tools",
+            "pages": [
+              "api/mcp/overview",
+              "api/mcp/tools"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Persistent memory across AI coding sessions",
+    "Multi-IDE support (Claude Code, Cursor, Codex, Goose)",
+    "Advanced hybrid search with HyDE and RRF fusion",
+    "Automatic session learning and observation extraction",
+    "Team memory sharing and collaboration",
+    "Scheduled maintenance and deduplication",
+    "MCP protocol integration",
+    "PostgreSQL with pgvector storage"
+  ],
+  "publicApiSurface": [
+    "POST /api/memory/add",
+    "POST /api/memory/search",
+    "GET /api/memory/get",
+    "POST /api/memory/update",
+    "POST /api/memory/forget",
+    "GET /api/memory/list",
+    "GET /api/memory/status",
+    "GET /api/memory/profile",
+    "GET /api/memory/foundation",
+    "POST /api/session/summarize",
+    "POST /api/tool/learning",
+    "POST /api/index/repo",
+    "POST /admin/users",
+    "GET /admin/users",
+    "POST /admin/teams",
+    "cems CLI",
+    "cems-server CLI",
+    "cems-observer CLI",
+    "MCP tools: memory_add, memory_search, memory_get, memory_forget, memory_update, memory_maintenance"
+  ]
+}
