@@ -1,0 +1,144 @@
+---
+title: "Session Profile"
+description: "Get pre-formatted session profile context for session initialization"
+---
+
+## Overview
+
+The profile endpoint returns a pre-formatted context string for session start injection. It assembles user preferences, guidelines, recent memories, gate rules, and project-specific context into a ready-to-use prompt section.
+
+## Endpoint
+
+<ParamField path="method" type="string">
+  GET
+</ParamField>
+
+<ParamField path="path" type="string">
+  /api/memory/profile
+</ParamField>
+
+<ParamField path="authentication" type="string">
+  API Key required
+</ParamField>
+
+## Query Parameters
+
+<ParamField query="project" type="string">
+  Project identifier for project-specific context (e.g., `org/repo`)
+</ParamField>
+
+<ParamField query="token_budget" type="integer" default="2500">
+  Maximum token budget for the context. Content is truncated if exceeded (~4 chars per token).
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Indicates if the operation was successful
+</ResponseField>
+
+<ResponseField name="context" type="string">
+  Pre-formatted context string with markdown sections ready for injection into the session prompt
+</ResponseField>
+
+<ResponseField name="components" type="object">
+  Count of each component type included in the context:
+  
+  <ResponseField name="components.preferences" type="integer">
+    Number of user preferences included
+  </ResponseField>
+  
+  <ResponseField name="components.foundation_guidelines" type="integer">
+    Number of foundational principles included (tagged with `foundation` or `constitution`)
+  </ResponseField>
+  
+  <ResponseField name="components.guidelines" type="integer">
+    Total guidelines included (foundation + regular)
+  </ResponseField>
+  
+  <ResponseField name="components.recent_memories" type="integer">
+    Number of recent memories from last 24 hours
+  </ResponseField>
+  
+  <ResponseField name="components.gate_rules_count" type="integer">
+    Total number of active gate rules (summary only, not full rules)
+  </ResponseField>
+  
+  <ResponseField name="components.project_context" type="integer">
+    Number of project-specific memories included
+  </ResponseField>
+</ResponseField>
+
+<ResponseField name="token_estimate" type="integer">
+  Estimated token count for the context string (~4 chars per token)
+</ResponseField>
+
+## Context Structure
+
+The context string includes the following sections (when available):
+
+1. **Your Preferences** - Up to 5 user preferences from the `preferences` category
+2. **Foundational Principles** - Up to 5 foundation guidelines (tagged `foundation` or `constitution`)
+3. **Guidelines** - Up to 5 regular guidelines (non-foundational)
+4. **Gate Rules** - Count summary with note that rules are checked automatically on tool use
+5. **Recent Context (last 24h)** - Up to 5 recent memories excluding preferences, guidelines, and gate-rules
+6. **Project Context** - Up to 3 project-specific memories (if project parameter provided)
+7. **Memory Conflicts Detected** - Up to 3 unresolved conflicts (if any exist)
+
+## Foundation Guidelines
+
+Guidelines are considered foundational when:
+- Tagged with `foundation` or `constitution`, OR
+- Source ref starts with `foundation:constitution`
+
+Foundation guidelines are prioritized in the profile context.
+
+<RequestExample>
+
+```bash cURL
+curl -X GET "https://api.cems.dev/api/memory/profile?project=acme/webapp&token_budget=2500" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+```bash With Default Budget
+curl -X GET "https://api.cems.dev/api/memory/profile" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```json 200 OK
+{
+  "success": true,
+  "context": "## Your Preferences\n- Use TypeScript for all new code\n- Prefer functional programming patterns\n\n## Foundational Principles\n- Always prioritize user privacy and data security\n- Write clear, self-documenting code\n\n## Guidelines\n- Run tests before committing\n- Use semantic commit messages\n\n## Gate Rules\n4 gate rules active (checked automatically on tool use)\n\n## Recent Context (last 24h)\n- [testing] Added integration tests for authentication flow\n- [documentation] Updated API documentation for new endpoints",
+  "components": {
+    "preferences": 2,
+    "foundation_guidelines": 2,
+    "guidelines": 4,
+    "recent_memories": 2,
+    "gate_rules_count": 4,
+    "project_context": 0
+  },
+  "token_estimate": 185
+}
+```
+
+```json With Project Context
+{
+  "success": true,
+  "context": "## Your Preferences\n- Use TypeScript for all new code\n\n## Project Context (acme/webapp)\n- Database uses PostgreSQL 15 with pgvector extension\n- Authentication via OAuth2 with JWT tokens\n- API versioned at /api/v1/",
+  "components": {
+    "preferences": 1,
+    "foundation_guidelines": 0,
+    "guidelines": 0,
+    "recent_memories": 0,
+    "gate_rules_count": 0,
+    "project_context": 3
+  },
+  "token_estimate": 142
+}
+```
+
+</ResponseExample>

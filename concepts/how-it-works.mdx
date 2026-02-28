@@ -1,0 +1,195 @@
+---
+title: How It Works
+description: Understanding CEMS's memory lifecycle and integration with AI coding assistants
+---
+
+CEMS provides persistent memory for AI coding assistants through four key mechanisms that work together to maintain context across sessions.
+
+## Memory Injection
+
+On every user prompt, CEMS automatically searches for relevant memories and injects them as context:
+
+1. **Prompt interception** - IDE hooks capture user prompts before they reach the LLM
+2. **Relevance search** - The [search pipeline](/concepts/search-pipeline) finds memories related to the query
+3. **Context injection** - Selected memories are added to the prompt with metadata (timestamp, category, confidence score)
+4. **Token budgeting** - Assembly algorithm ensures context fits within token limits (default: 2000 tokens)
+
+### Hook Integration
+
+CEMS uses IDE-specific hooks to intercept prompts:
+
+- **Claude Code**: `cems_user_prompts_submit.py` hook
+- **Cursor**: `cems_agent_response.py` hook  
+- **Codex**: Commands with memory recall
+- **Goose**: MCP integration via config.yaml
+
+### Automatic vs Manual Recall
+
+**Automatic injection** happens transparently on every prompt. Users can also trigger **manual recall** using skills:
+
+```bash
+/recall What are my coding preferences?
+/remember I prefer Python for backend development
+```
+
+## Session Learning
+
+At the end of each session, CEMS extracts and stores key learnings:
+
+### Extraction Process
+
+1. **Session end hook** triggers (`cems_stop.py` in Claude Code)
+2. **Transcript analysis** - LLM reviews the full session transcript
+3. **Learning extraction** - Identifies:
+   - User preferences discovered
+   - Decisions made
+   - Patterns observed
+   - Problems solved
+4. **Storage** - Learnings stored as memories with `category: learnings`
+
+### Tool Learning
+
+The `cems_post_tool_use.py` hook captures tool-specific learnings:
+
+- Successful tool usage patterns
+- Tool parameter preferences
+- Error recovery strategies
+- Tool combinations that work well
+
+These are stored as memories with `category: patterns` for future reference.
+
+## Observational Memory
+
+The observer daemon runs continuously in the background to capture high-level workflow patterns:
+
+### How It Works
+
+```bash
+cems-observer  # Background process
+```
+
+1. **Transcript monitoring** - Polls `~/.claude/projects/*/` JSONL files every 30 seconds
+2. **Accumulation** - Waits until 50KB of new content accumulates
+3. **Batch extraction** - Sends transcript batch to server
+4. **Observation generation** - Server uses Gemini 2.5 Flash to extract high-level insights
+5. **Storage** - Observations stored as memories with `category: context`
+
+### What Gets Observed
+
+The observer identifies workflow patterns like:
+
+- Deployment workflows ("User deploys via Coolify")
+- Technology stack ("Project uses PostgreSQL + pgvector")
+- Development patterns ("User prefers TypeScript for new features")
+- Infrastructure choices ("Uses Docker Compose for local development")
+
+Unlike session learning (which captures specific decisions), observational memory captures **patterns across multiple sessions**.
+
+## Scheduled Maintenance
+
+CEMS runs automated maintenance jobs to keep memory quality high:
+
+| Job | Schedule | Purpose |
+|-----|----------|----------|
+| **Consolidation** | Nightly 3 AM | Merge semantic duplicates (cosine similarity ≥ 0.92) |
+| **Observation Reflection** | Nightly 3:30 AM | Condense observations per project |
+| **Summarization** | Weekly Sunday 4 AM | Compress old memories, prune stale entries |
+| **Re-indexing** | Monthly 1st 5 AM | Rebuild embeddings, archive dead memories |
+
+### Consolidation
+
+Finds near-duplicate memories using vector similarity:
+
+- Compares embeddings with cosine similarity
+- Merges duplicates with similarity ≥ 0.92
+- Keeps metadata from the more recent/accessed version
+- Updates access counts and timestamps
+
+### Summarization
+
+Compresses old, low-priority memories:
+
+- Targets memories older than 90 days with low access counts
+- LLM generates concise summaries preserving key information
+- Original content archived (soft-delete with `archived: true`)
+- Reduces storage while maintaining searchability
+
+### Manual Maintenance
+
+Users can trigger maintenance manually:
+
+```bash
+cems maintenance --job consolidation
+cems maintenance --job summarization
+cems maintenance --job reindexing
+```
+
+## Memory Lifecycle
+
+A typical memory flows through these stages:
+
+```mermaid
+graph TD
+    A[User Action] --> B{Entry Point}
+    B -->|Explicit| C[/remember command]
+    B -->|Session End| D[Learning Extraction]
+    B -->|Tool Use| E[Tool Learning]
+    B -->|Background| F[Observer Daemon]
+    
+    C --> G[Document + Chunks]
+    D --> G
+    E --> G
+    F --> G
+    
+    G --> H[Embedding Generation]
+    H --> I[(PostgreSQL + pgvector)]
+    
+    I --> J{Usage}
+    J -->|Search| K[Relevance Scoring]
+    J -->|Access| L[Priority Boost]
+    
+    K --> M[Context Injection]
+    L --> M
+    
+    M --> N{Time Passes}
+    N -->|Active Use| O[Priority Increases]
+    N -->|No Use| P[Time Decay]
+    
+    O --> J
+    P --> Q[Consolidation]
+    Q --> R[Summarization]
+    R --> S[Archive]
+```
+
+## Configuration
+
+Memory behavior can be configured through environment variables:
+
+```bash
+# Auto-update control
+CEMS_AUTO_UPDATE=0  # Disable auto-updates
+
+# Observer settings
+CEMS_OBSERVER_POLL_INTERVAL=30  # Seconds between transcript checks
+CEMS_OBSERVER_BATCH_SIZE=50000  # Bytes before extraction
+
+# Maintenance schedules
+CEMS_CONSOLIDATION_SCHEDULE="0 3 * * *"  # Cron format
+```
+
+See `~/.cems/credentials` for credential storage and IDE-specific settings in `~/.cems/install.conf`.
+
+## Integration Points
+
+### Code References
+
+- Memory injection: `src/cems/memory/retrieval.py:retrieve_for_inference()`
+- Session learning: `src/cems/api/endpoints.py:/api/session/summarize`
+- Observer daemon: `src/cems/observer.py`
+- Maintenance jobs: `src/cems/maintenance/scheduler.py`
+
+### Related Concepts
+
+- [Memory Types](/concepts/memory-types) - Categories and organization
+- [Search Pipeline](/concepts/search-pipeline) - How memories are retrieved
+- [Architecture](/concepts/architecture) - System components and storage

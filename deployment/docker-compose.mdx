@@ -1,0 +1,292 @@
+---
+title: Docker Compose Setup
+description: Deploy CEMS services with Docker Compose
+---
+
+## Prerequisites
+
+- Docker 20.10+ with Compose V2
+- OpenRouter API key (get from [openrouter.ai/keys](https://openrouter.ai/keys))
+- Admin key for user management (generate with `openssl rand -hex 32`)
+
+## Quick Start
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/chocksy/cems.git
+    cd cems
+    ```
+  </Step>
+
+  <Step title="Create environment file">
+    Create a `.env` file in the project root:
+
+    ```bash
+    # Required
+    OPENROUTER_API_KEY=sk-or-v1-...
+    CEMS_ADMIN_KEY=$(openssl rand -hex 32)
+
+    # Optional (secure the database)
+    POSTGRES_PASSWORD=your_secure_password_here
+    ```
+
+    <Warning>
+      Never commit `.env` to version control. Add it to `.gitignore`.
+    </Warning>
+  </Step>
+
+  <Step title="Start services">
+    ```bash
+    docker compose up -d
+    ```
+
+    This will:
+    - Pull the `pgvector/pgvector:pg16` image
+    - Build `cems-server` from `Dockerfile`
+    - Build `cems-mcp` from `mcp-wrapper/Dockerfile`
+    - Initialize the PostgreSQL database with `deploy/init.sql`
+    - Start all services with health checks
+  </Step>
+
+  <Step title="Verify services are running">
+    ```bash
+    docker compose ps
+    ```
+
+    All services should show `healthy` status:
+    ```
+    NAME            STATUS
+    cems-postgres   Up (healthy)
+    cems-server     Up (healthy)
+    cems-mcp        Up (healthy)
+    ```
+  </Step>
+
+  <Step title="Check server health">
+    ```bash
+    curl http://localhost:8765/health
+    ```
+
+    Expected response:
+    ```json
+    {"status": "ok"}
+    ```
+  </Step>
+</Steps>
+
+## Service Details
+
+### PostgreSQL + pgvector
+
+```yaml
+postgres:
+  image: pgvector/pgvector:pg16
+  container_name: cems-postgres
+  environment:
+    POSTGRES_USER: cems
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cems_secure_password}
+    POSTGRES_DB: cems
+  volumes:
+    - postgres_data:/var/lib/postgresql/data
+    - ./deploy/init.sql:/docker-entrypoint-initdb.d/init.sql
+  ports:
+    - "5432:5432"
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U cems"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+```
+
+**Key Points:**
+- Uses `pgvector` extension for 1536-dim vector embeddings
+- Database initialized with `deploy/init.sql` on first run
+- Health check ensures database is ready before starting dependent services
+- Data persisted in Docker volume `postgres_data`
+
+### cems-server
+
+```yaml
+cems-server:
+  build:
+    context: .
+    dockerfile: Dockerfile
+  container_name: cems-server
+  environment:
+    CEMS_DATABASE_URL: postgresql://cems:${POSTGRES_PASSWORD:-cems_secure_password}@postgres:5432/cems
+    OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+    CEMS_MODE: server
+    CEMS_SERVER_HOST: 0.0.0.0
+    CEMS_SERVER_PORT: 8765
+    CEMS_ADMIN_KEY: ${CEMS_ADMIN_KEY}
+    CEMS_EMBEDDING_BACKEND: openrouter
+    CEMS_EMBEDDING_DIMENSION: 1536
+    CEMS_RERANKER_BACKEND: disabled
+  ports:
+    - "8765:8765"
+  depends_on:
+    postgres:
+      condition: service_healthy
+```
+
+**Key Points:**
+- Python 3.12-slim base image
+- Runs as non-root user `cems` (UID 1000)
+- Uses `uv` for fast dependency installation
+- Health check at `/health` endpoint
+- Waits for PostgreSQL to be healthy before starting
+
+**See the full Dockerfile at:** `~/workspace/source/Dockerfile`
+
+### cems-mcp
+
+```yaml
+cems-mcp:
+  build:
+    context: ./mcp-wrapper
+    dockerfile: Dockerfile
+  container_name: cems-mcp
+  environment:
+    PYTHON_API_URL: http://cems-server:8765
+    PORT: 8766
+  ports:
+    - "8766:8766"
+  depends_on:
+    cems-server:
+      condition: service_healthy
+```
+
+**Key Points:**
+- Express.js server exposing MCP-over-HTTP
+- Proxies requests to `cems-server` at port 8765
+- Provides 6 MCP tools: `memory_add`, `memory_search`, `memory_get`, `memory_forget`, `memory_update`, `memory_maintenance`
+- Streamable HTTP transport for MCP clients
+
+## Volumes
+
+The compose file defines two volumes:
+
+```yaml
+volumes:
+  postgres_data:  # PostgreSQL data persistence
+  llama_models:   # (Optional) For local llama.cpp embeddings
+```
+
+<Note>
+  The `llama_models` volume is only used if you switch to `CEMS_EMBEDDING_BACKEND=llamacpp_server`. By default, OpenRouter API is used.
+</Note>
+
+## Networking
+
+All services run on the default Docker bridge network. Services communicate by container name:
+
+- `cems-server` → `postgres:5432`
+- `cems-mcp` → `cems-server:8765`
+
+## Port Mapping
+
+| Service | Internal Port | External Port | Purpose |
+|---------|---------------|---------------|----------|
+| postgres | 5432 | 5432 | PostgreSQL + pgvector |
+| cems-server | 8765 | 8765 | REST API + Admin API |
+| cems-mcp | 8766 | 8766 | MCP-over-HTTP |
+
+<Warning>
+  If you expose these ports to the internet, ensure you:
+  - Use a reverse proxy (nginx, Caddy, Traefik)
+  - Enable HTTPS with valid certificates
+  - Implement rate limiting
+  - Restrict access by IP if possible
+</Warning>
+
+## Stopping Services
+
+```bash
+# Stop services (keeps data)
+docker compose down
+
+# Stop and remove volumes (DELETES ALL DATA)
+docker compose down -v
+```
+
+## Logs
+
+```bash
+# View all logs
+docker compose logs -f
+
+# View specific service
+docker compose logs -f cems-server
+
+# View last 100 lines
+docker compose logs --tail=100 cems-server
+```
+
+## Updating
+
+<Steps>
+  <Step title="Pull latest code">
+    ```bash
+    git pull origin main
+    ```
+  </Step>
+
+  <Step title="Rebuild and restart">
+    ```bash
+    docker compose up -d --build
+    ```
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Services won't start
+
+```bash
+# Check service status
+docker compose ps
+
+# Check logs for errors
+docker compose logs cems-server
+```
+
+Common issues:
+- Missing `OPENROUTER_API_KEY` in `.env`
+- Missing `CEMS_ADMIN_KEY` in `.env`
+- Port 5432/8765/8766 already in use
+- Insufficient Docker resources (memory/CPU)
+
+### Database connection errors
+
+```bash
+# Check PostgreSQL logs
+docker compose logs postgres
+
+# Verify database is healthy
+docker compose exec postgres pg_isready -U cems
+
+# Connect to database manually
+docker compose exec postgres psql -U cems -d cems
+```
+
+### Health check failing
+
+```bash
+# Test health endpoint
+curl http://localhost:8765/health
+
+# Check if all environment variables are set
+docker compose exec cems-server env | grep CEMS
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/deployment/configuration">
+    Customize environment variables
+  </Card>
+  <Card title="User Management" icon="users" href="/deployment/user-management">
+    Create your first user
+  </Card>
+</CardGroup>

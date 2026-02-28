@@ -1,0 +1,139 @@
+---
+title: Deployment Overview
+description: When and why to deploy CEMS as a server for team usage
+---
+
+## When to Deploy a Server
+
+CEMS can run in two modes:
+
+1. **Client Mode (Individual)** - Users connect to an existing CEMS server with an API key
+2. **Server Mode (Team/Company)** - Self-hosted server for multi-user, multi-team deployment
+
+Deploy a CEMS server when:
+
+- Your team needs **shared memory** across members
+- You want **centralized user management** with API keys
+- You need **team-scoped memories** separate from personal memories
+- You require **audit logs** and compliance tracking
+- You want to **self-host** for data privacy and control
+
+## Architecture
+
+CEMS uses a three-service architecture:
+
+```
+┌─────────────┐
+│   Client    │  (IDE hooks, MCP clients)
+│  (Any IDE)  │
+└──────┬──────┘
+       │ HTTPS + Bearer token
+       ↓
+┌─────────────┐
+│  cems-mcp   │  Port 8766 (Express.js)
+│   Wrapper   │  MCP-over-HTTP server
+└──────┬──────┘
+       │ HTTP
+       ↓
+┌─────────────┐
+│ cems-server │  Port 8765 (Python/Starlette)
+│  REST API   │  Memory operations + Admin API
+└──────┬──────┘
+       │ PostgreSQL
+       ↓
+┌─────────────┐
+│  postgres   │  Port 5432 (pgvector/pg16)
+│  + pgvector │  Vectors, metadata, users, teams
+└─────────────┘
+```
+
+## Services
+
+<CardGroup cols={3}>
+  <Card title="PostgreSQL + pgvector" icon="database">
+    - Image: `pgvector/pgvector:pg16`
+    - Port: `5432`
+    - Stores vectors (1536-dim), metadata, users, teams
+    - HNSW index for fast vector search
+    - Full-text search (BM25) with tsvector
+  </Card>
+
+  <Card title="cems-server" icon="python">
+    - Built from `Dockerfile`
+    - Port: `8765`
+    - Python REST API (Starlette + uvicorn)
+    - Handles memory CRUD, search, maintenance
+    - Admin API for user/team management
+  </Card>
+
+  <Card title="cems-mcp" icon="server">
+    - Built from `mcp-wrapper/Dockerfile`
+    - Port: `8766`
+    - Express.js MCP wrapper
+    - Exposes 6 MCP tools (memory_add, memory_search, etc.)
+    - Streamable HTTP transport
+  </Card>
+</CardGroup>
+
+## Storage
+
+All data lives in **PostgreSQL with pgvector**:
+
+| Table | Purpose |
+|-------|--------|
+| `users` | User accounts with bcrypt-hashed API keys |
+| `teams` | Team/company groupings |
+| `team_members` | User-team memberships with roles |
+| `memory_documents` | Memory documents with metadata |
+| `memory_chunks` | Chunked content with 1536-dim embeddings |
+| `memory_relations` | Memory relationships |
+| `audit_log` | Compliance and activity tracking |
+
+## Embeddings
+
+By default, CEMS uses:
+- **Model**: `openai/text-embedding-3-small` via OpenRouter
+- **Dimensions**: 1536
+- **Backend**: OpenRouter API (`CEMS_EMBEDDING_BACKEND=openrouter`)
+
+Alternative: llama.cpp server for local embeddings (768-dim)
+
+## Search Pipeline
+
+CEMS implements a multi-stage retrieval system:
+
+1. **Query Understanding** - LLM routes to vector or hybrid strategy
+2. **Query Synthesis** - LLM expands query into 2-5 search terms
+3. **HyDE** - Generates hypothetical ideal answer for better matching
+4. **Candidate Retrieval** - pgvector HNSW (vector) + tsvector (BM25 full-text)
+5. **RRF Fusion** - Reciprocal Rank Fusion combines result lists
+6. **Relevance Filtering** - Removes results below threshold
+7. **Scoring Adjustments** - Time decay, priority boost, project-scoped boost
+8. **Token-Budgeted Assembly** - Greedy selection within token budget (default: 2000)
+
+Search modes: `vector` (fast), `hybrid` (thorough), `auto` (smart routing)
+
+## Maintenance
+
+Scheduled jobs via APScheduler:
+
+| Job | Schedule | Purpose |
+|-----|----------|---------|
+| **Consolidation** | Nightly 3 AM | Merge semantic duplicates (cosine >= 0.92) |
+| **Observation Reflection** | Nightly 3:30 AM | Condense observations per project |
+| **Summarization** | Weekly Sun 4 AM | Compress old memories, prune stale |
+| **Re-indexing** | Monthly 1st 5 AM | Rebuild embeddings, archive dead memories |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Docker Compose Setup" icon="docker" href="/deployment/docker-compose">
+    Launch services with docker compose
+  </Card>
+  <Card title="Configuration" icon="gear" href="/deployment/configuration">
+    Environment variables and settings
+  </Card>
+  <Card title="User Management" icon="users" href="/deployment/user-management">
+    Create users and manage API keys
+  </Card>
+</CardGroup>

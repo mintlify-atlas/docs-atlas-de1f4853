@@ -1,0 +1,162 @@
+---
+title: "Foundation Guidelines"
+description: "Fetch foundational guidelines for the AI assistant"
+---
+
+## Overview
+
+The foundation endpoint retrieves all guidelines tagged as foundational. These are core principles and constitutional rules that should govern the AI assistant's behavior across all sessions and projects.
+
+## Endpoint
+
+<ParamField path="method" type="string">
+  GET
+</ParamField>
+
+<ParamField path="path" type="string">
+  /api/memory/foundation
+</ParamField>
+
+<ParamField path="authentication" type="string">
+  API Key required
+</ParamField>
+
+## Query Parameters
+
+<ParamField query="project" type="string">
+  Project identifier to include project-specific foundational guidelines (e.g., `org/repo`). When provided, fetches both global and project-scoped foundation guidelines.
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Indicates if the operation was successful
+</ResponseField>
+
+<ResponseField name="guidelines" type="array">
+  Array of foundational guideline documents
+  
+  <ResponseField name="guidelines[].memory_id" type="string">
+    Unique document ID
+  </ResponseField>
+  
+  <ResponseField name="guidelines[].content" type="string">
+    Full guideline text
+  </ResponseField>
+  
+  <ResponseField name="guidelines[].category" type="string">
+    Document category (always `guidelines` for foundation guidelines)
+  </ResponseField>
+  
+  <ResponseField name="guidelines[].source_ref" type="string">
+    Source reference (e.g., `foundation:constitution`, `project:org/repo`)
+  </ResponseField>
+  
+  <ResponseField name="guidelines[].tags" type="array">
+    Array of tags. Foundation guidelines have `foundation` or `constitution` tag.
+  </ResponseField>
+</ResponseField>
+
+<ResponseField name="count" type="integer">
+  Total number of foundation guidelines returned
+</ResponseField>
+
+## Foundation Detection
+
+A guideline is considered foundational when it meets ANY of these criteria:
+
+1. **Tags**: Contains `foundation` or `constitution` tag (case-insensitive)
+2. **Source Reference**: `source_ref` starts with `foundation:constitution` (case-insensitive)
+
+This dual detection ensures guidelines can be marked as foundational through either tagging or source reference.
+
+## Retrieval Behavior
+
+- **Without project parameter**: Returns all global foundation guidelines (category=`guidelines`, foundation tags)
+- **With project parameter**: Returns both:
+  - Global foundation guidelines
+  - Project-specific foundation guidelines (source_ref=`project:{project}`)
+- Queries document store directly (no semantic search)
+- Limit: 50 guidelines
+
+<RequestExample>
+
+```bash cURL (Global)
+curl -X GET "https://api.cems.dev/api/memory/foundation" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+```bash With Project Filter
+curl -X GET "https://api.cems.dev/api/memory/foundation?project=acme/webapp" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```json 200 OK
+{
+  "success": true,
+  "guidelines": [
+    {
+      "memory_id": "mem_abc123",
+      "content": "Always prioritize user privacy and data security. Never log sensitive information.",
+      "category": "guidelines",
+      "source_ref": "foundation:constitution",
+      "tags": ["foundation", "security", "privacy"]
+    },
+    {
+      "memory_id": "mem_def456",
+      "content": "Write clear, self-documenting code. Prefer readability over cleverness.",
+      "category": "guidelines",
+      "source_ref": "foundation:constitution",
+      "tags": ["constitution", "code-quality"]
+    },
+    {
+      "memory_id": "mem_ghi789",
+      "content": "All API endpoints must include rate limiting and authentication.",
+      "category": "guidelines",
+      "source_ref": "project:acme/webapp",
+      "tags": ["foundation", "api", "security"]
+    }
+  ],
+  "count": 3
+}
+```
+
+```json No Foundation Guidelines
+{
+  "success": true,
+  "guidelines": [],
+  "count": 0
+}
+```
+
+</ResponseExample>
+
+## Use Cases
+
+### Session Initialization
+Fetch foundation guidelines at session start to inject core principles into the system prompt:
+
+```javascript
+const response = await fetch('https://api.cems.dev/api/memory/foundation', {
+  headers: { 'Authorization': 'Bearer YOUR_API_KEY' }
+});
+const { guidelines } = await response.json();
+const principles = guidelines.map(g => g.content).join('\n\n');
+```
+
+### Project-Specific Rules
+Retrieve both global and project-specific foundational rules:
+
+```javascript
+const response = await fetch(
+  'https://api.cems.dev/api/memory/foundation?project=acme/webapp',
+  { headers: { 'Authorization': 'Bearer YOUR_API_KEY' } }
+);
+```
+
+### Constitution Validation
+Verify that an action complies with foundational guidelines before execution.

@@ -1,0 +1,472 @@
+---
+title: "Claude Code Integration"
+description: "Complete guide to CEMS integration with Claude Code - hooks, skills, commands, and setup"
+---
+
+## Overview
+
+Claude Code has the deepest CEMS integration with 6 hooks, 6 skills, 2 commands, and automatic context injection on every prompt.
+
+## What Gets Installed
+
+When you run `cems setup --claude`, the installer creates:
+
+```
+~/.claude/
+├── settings.json           # Hooks config (merged, not overwritten)
+├── hooks/
+│   ├── cems_session_start.py        # Profile + context injection
+│   ├── cems_user_prompts_submit.py  # Memory search + observations
+│   ├── cems_post_tool_use.py        # Tool learning extraction
+│   ├── cems_pre_tool_use.py         # Gate rules enforcement
+│   ├── cems_stop.py                 # Session analysis + observer
+│   ├── cems_pre_compact.py          # Pre-compaction hook
+│   └── utils/                       # Shared utilities
+├── skills/cems/
+│   ├── recall.md           # /recall - Search memories
+│   ├── remember.md         # /remember - Add personal memory
+│   ├── share.md            # /share - Add team memory
+│   ├── forget.md           # /forget - Delete memory
+│   ├── context.md          # /context - Show status
+│   └── memory-guide.md     # Proactive memory usage guide
+└── commands/
+    ├── recall.md           # /recall command
+    └── remember.md         # /remember command
+```
+
+## Hooks
+
+### cems_session_start.py
+
+**Trigger:** Session start (new or resume)
+
+**Purpose:** Injects user profile and foundation guidelines into session context
+
+**What it does:**
+1. Fetches user profile via `/api/memory/profile` (preferences, past decisions)
+2. Fetches foundation guidelines via `/api/memory/foundation` (cached 15 min)
+3. Checks for auto-updates (every 5 minutes, background)
+4. Ensures observer daemon is running
+5. Injects context as `<cems-profile>` and `<cems-foundation>` XML blocks
+
+**Configuration:**
+- `CEMS_API_URL` - Server URL
+- `CEMS_API_KEY` - API key
+- `CEMS_AUTO_UPDATE` - Set to `0` to disable auto-updates
+
+**Example output:**
+```xml
+<cems-profile>
+## Your Preferences
+- Prefers Python for backend development
+- Uses snake_case for database columns
+</cems-profile>
+
+<cems-foundation>
+## Foundation Guidelines
+- Always check for existing patterns before implementing new code
+- Write tests for all public APIs
+</cems-foundation>
+```
+
+### cems_user_prompts_submit.py
+
+**Trigger:** Every user prompt
+
+**Purpose:** Searches CEMS for relevant memories and injects them before Claude sees your prompt
+
+**What it does:**
+1. Strips XML tags from prompt (system reminders, previous hook output)
+2. Detects project from git remote (e.g., `Chocksy/cems`)
+3. Searches CEMS via `/api/memory/search` with project-scoped boosting
+4. Populates gate rule cache for `cems_pre_tool_use.py`
+5. Injects memories as `<memory-recall>` block
+6. Handles `-u` flag for ultrathink mode
+7. Logs retrieval scores for offline analysis
+
+**Smart behavior:**
+- Skips confirmatory prompts ("yes", "go ahead") and instead searches what Claude just proposed
+- Skips short prompts (< 15 chars) and slash commands
+- Client-side score filtering (drops results < 0.4)
+- Session deduplication (one result per session)
+
+**Example output:**
+```xml
+<memory-recall>
+RELEVANT MEMORIES found for "how do we deploy":
+
+1. [workflow] (score: 0.87) Deployment uses Coolify with Docker Compose (id: abc12345)
+2. [decisions] (score: 0.73) Production deploys require manual approval (id: def67890)
+
+--- Retrieval: 2 results, avg score 0.80, top 0.87 ---
+
+After responding, note which memories (by number) were relevant vs noise.
+</memory-recall>
+```
+
+### cems_pre_tool_use.py
+
+**Trigger:** Before tool execution (bash, edit, etc.)
+
+**Purpose:** Enforces gate rules - blocks or warns on dangerous operations
+
+**What it does:**
+1. Reads cached gate rules (populated by `cems_user_prompts_submit.py`)
+2. Matches tool calls against regex patterns
+3. Returns block/confirm/warn based on severity
+
+**Gate rule format:**
+```
+Tool: pattern — reason
+```
+
+Example gate rules:
+- `bash: rm -rf / — Never delete root directory` (severity: block)
+- `bash: git push --force — Force push can destroy history` (severity: confirm)
+
+### cems_post_tool_use.py
+
+**Trigger:** After tool execution
+
+**Purpose:** Extracts learnings from tool usage patterns
+
+**What it does:**
+1. Analyzes tool results (especially errors)
+2. Sends to `/api/tool/learning` for pattern extraction
+3. Stores common error solutions as memories
+
+### cems_stop.py
+
+**Trigger:** Session end
+
+**Purpose:** Signals observer daemon to finalize session summary
+
+**What it does:**
+1. Logs session data to `~/.cems/sessions/{session_id}/stop.json`
+2. Optionally saves transcript with `--chat` flag
+3. Writes stop signal to `~/.cems/observer/signals/{session_id}.json`
+4. Observer daemon picks up signal and calls `/api/session/summarize`
+
+### cems_pre_compact.py
+
+**Trigger:** Before context compaction
+
+**Purpose:** Preserves important context before Claude Code compacts the conversation
+
+## Skills
+
+Skills are invoked with `/skill-name` or as part of agent workflows.
+
+### /recall
+
+**File:** `~/.claude/skills/cems/recall.md`
+
+**Purpose:** Search memories
+
+**Usage:**
+```
+/recall database conventions
+/recall --scope shared team patterns
+/recall --limit 10 authentication
+```
+
+**Implementation:**
+1. Parses `--limit`, `--scope` flags
+2. Detects project from `git remote get-url origin`
+3. Calls `memory_search` MCP tool with project parameter
+4. Fetches full documents for truncated results via `memory_get`
+
+### /remember
+
+**File:** `~/.claude/skills/cems/remember.md`
+
+**Purpose:** Store personal memories
+
+**Usage:**
+```
+/remember We use PostgreSQL with pgvector for embeddings
+```
+
+**Implementation:**
+1. Detects project from git remote
+2. Determines category (preferences, conventions, architecture, decisions, workflow, errors, learnings, general)
+3. Calls `memory_add` MCP tool with `scope: "personal"` and `source_ref: "project:org/repo"`
+
+### /share
+
+**File:** `~/.claude/skills/cems/share.md`
+
+**Purpose:** Store team-wide memories
+
+**Usage:**
+```
+/share API endpoints follow REST conventions with /api/v1/ prefix
+```
+
+**Same as /remember but with `scope: "shared"`**
+
+### /forget
+
+**File:** `~/.claude/skills/cems/forget.md`
+
+**Purpose:** Delete or archive memories
+
+**Usage:**
+```
+/forget abc12345
+```
+
+### /context
+
+**File:** `~/.claude/skills/cems/context.md`
+
+**Purpose:** Show memory system status
+
+**Displays:**
+- Session ID
+- Project context
+- Recent memories count
+- Observer daemon status
+
+### memory-guide.md
+
+**File:** `~/.claude/skills/cems/memory-guide.md`
+
+**Purpose:** Instructions for proactive memory usage
+
+**Teaches Claude when to:**
+- Search before starting tasks
+- Store discoveries during work
+- Update stale memories
+- Forget noise
+
+## Commands
+
+Commands are shortcuts accessible via `/recall` and `/remember` directly in chat.
+
+### /recall command
+
+**File:** `~/.claude/commands/recall.md`
+
+Provides quick access to memory search without typing `/skill cems/recall`.
+
+### /remember command
+
+**File:** `~/.claude/commands/remember.md`
+
+Provides quick access to memory storage.
+
+## Setup Verification
+
+After installation, verify everything works:
+
+### 1. Check files exist
+
+```bash
+ls ~/.claude/hooks/cems_*.py
+ls ~/.claude/skills/cems/
+ls ~/.claude/commands/
+```
+
+Expected output:
+```
+~/.claude/hooks/cems_session_start.py
+~/.claude/hooks/cems_user_prompts_submit.py
+~/.claude/hooks/cems_post_tool_use.py
+~/.claude/hooks/cems_pre_tool_use.py
+~/.claude/hooks/cems_stop.py
+~/.claude/hooks/cems_pre_compact.py
+
+~/.claude/skills/cems/recall.md
+~/.claude/skills/cems/remember.md
+~/.claude/skills/cems/share.md
+~/.claude/skills/cems/forget.md
+~/.claude/skills/cems/context.md
+~/.claude/skills/cems/memory-guide.md
+
+~/.claude/commands/recall.md
+~/.claude/commands/remember.md
+```
+
+### 2. Check credentials
+
+```bash
+cat ~/.cems/credentials
+```
+
+Should show:
+```
+CEMS_API_URL=https://your-server.com
+CEMS_API_KEY=cems_usr_...
+```
+
+### 3. Test connection
+
+```bash
+cems health
+```
+
+Expected output:
+```
+✓ CEMS server reachable
+✓ API key valid
+✓ Database connected
+```
+
+### 4. Test hook manually
+
+```bash
+echo '{"prompt": "test", "session_id": "test-123", "cwd": "."}' | \
+  uv run ~/.claude/hooks/cems_user_prompts_submit.py
+```
+
+Should return JSON with `hookSpecificOutput` if memories found, or nothing if no matches.
+
+### 5. Test in Claude Code
+
+Start a new session and type:
+```
+/recall test
+```
+
+Claude should search CEMS and display results.
+
+## How It Works
+
+### On Session Start
+
+1. `cems_session_start.py` runs
+2. Fetches your profile (preferences, past decisions) from `/api/memory/profile`
+3. Fetches foundation guidelines from `/api/memory/foundation`
+4. Injects both as XML blocks in session context
+5. Checks for updates (background, every 5 min)
+6. Ensures observer daemon is running
+
+### On Every Prompt
+
+1. `cems_user_prompts_submit.py` runs
+2. Strips XML tags from prompt to get clean user text
+3. Detects project from git remote (e.g., `git@github.com:Chocksy/cems.git` → `Chocksy/cems`)
+4. Searches CEMS with project-scoped boosting (same-project memories rank higher)
+5. Populates gate rule cache (used by `cems_pre_tool_use.py`)
+6. Injects memories as `<memory-recall>` block
+7. Logs retrieval scores to `~/.cems/sessions/{session_id}/hook_events.jsonl`
+
+### On Tool Use
+
+1. `cems_pre_tool_use.py` checks gate rules before execution
+2. Tool executes
+3. `cems_post_tool_use.py` extracts learnings from results
+
+### On Session End
+
+1. `cems_stop.py` writes stop signal
+2. Observer daemon detects signal
+3. Observer reads transcript from `~/.claude/projects/{project}/transcripts/{session_id}.jsonl`
+4. Sends to `/api/session/summarize` for narrative extraction
+5. Server extracts high-level observations ("User deploys via Coolify", "Project uses PostgreSQL")
+6. Observations stored as memories with `category: observation`
+
+## Observer Daemon
+
+The observer runs as a background process (`cems-observer`) and:
+
+- Polls `~/.claude/projects/*/` for new JSONL transcripts every 30 seconds
+- When 50KB of new content accumulates, sends to server
+- Server extracts observations via Gemini 2.5 Flash
+- Observations stored as memories automatically
+
+Start/stop manually:
+```bash
+cems-observer start
+cems-observer stop
+cems-observer status
+```
+
+Or let hooks manage it automatically (recommended).
+
+## Troubleshooting
+
+### Memories not appearing in prompts
+
+1. Check hook output:
+   ```bash
+   echo '{"prompt": "test query", "session_id": "test", "cwd": "."}' | \
+     uv run ~/.claude/hooks/cems_user_prompts_submit.py
+   ```
+2. Check credentials: `cat ~/.cems/credentials`
+3. Test connection: `cems health`
+4. Check server logs if self-hosting
+
+### Skills not appearing
+
+1. Verify files exist: `ls ~/.claude/skills/cems/`
+2. Restart Claude Code
+3. Type `/` and look for `recall`, `remember`, `share`, `forget`, `context`
+
+### Observer not running
+
+1. Check status: `cems-observer status`
+2. Check logs: `cat ~/.cems/observer/observer.log`
+3. Restart: `cems-observer restart`
+
+### Hook errors
+
+1. Check hook logs: `cat ~/.cems/sessions/{session_id}/hook_events.jsonl`
+2. Test hook directly (see "Test hook manually" above)
+3. Check Python version: `python3 --version` (needs 3.11+)
+4. Check uv installed: `uv --version`
+
+## Advanced Configuration
+
+### Disable auto-updates
+
+Add to `~/.cems/credentials`:
+```bash
+CEMS_AUTO_UPDATE=0
+```
+
+Or set environment variable:
+```bash
+export CEMS_AUTO_UPDATE=0
+```
+
+### Adjust profile token budget
+
+Edit `cems_session_start.py` and change:
+```python
+profile = fetch_profile(project, token_budget=5000)  # Default: 2500
+```
+
+### Custom gate rules
+
+Add gate rules via CLI:
+```bash
+cems add "bash: rm -rf * — Dangerous recursive delete" \
+  --category gate_rule --tags block
+```
+
+Or via `/remember`:
+```
+/remember bash: git push --force — Force push can destroy history
+(then manually tag as gate_rule, severity: confirm)
+```
+
+## MCP Tools Available
+
+All Claude Code hooks and skills use these MCP tools:
+
+| Tool | Endpoint | Used By |
+|------|----------|----------|
+| `memory_search` | `/api/memory/search` | `cems_user_prompts_submit.py`, `/recall` |
+| `memory_add` | `/api/memory/add` | `/remember`, `/share` |
+| `memory_get` | `/api/memory/get` | `/recall` (for truncated results) |
+| `memory_forget` | `/api/memory/forget` | `/forget` |
+| `memory_update` | `/api/memory/update` | Manual edits |
+| `memory_maintenance` | `/api/memory/maintenance` | Scheduled jobs |
+
+## Next Steps
+
+- [Cursor Integration](/integrations/cursor) - Lighter integration via MCP + hooks
+- [Codex Integration](/integrations/codex) - Command-based interface
+- [Goose Integration](/integrations/goose) - MCP-only extension

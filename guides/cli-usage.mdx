@@ -1,0 +1,590 @@
+---
+title: CLI Usage
+description: Complete reference for the CEMS command-line interface
+---
+
+## Overview
+
+The CEMS CLI provides commands for managing memories, checking system health, running maintenance, and configuring installations. It communicates with a CEMS server via HTTP API.
+
+## Installation
+
+The CLI is installed via `uv tool install`:
+
+```bash
+curl -fsSL https://getcems.com/install.sh | bash
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/chocksy/cems.git && cd cems
+./install.sh
+```
+
+This installs three commands:
+- `cems` - Main CLI
+- `cems-server` - Server component
+- `cems-observer` - Observer daemon
+
+## Configuration
+
+Credentials are checked in order:
+1. CLI flags: `--api-url`, `--api-key`
+2. Environment: `CEMS_API_URL`, `CEMS_API_KEY`
+3. Credentials file: `~/.cems/credentials`
+
+### Credentials File
+
+Stored at `~/.cems/credentials` (chmod 600):
+
+```bash
+CEMS_API_URL=https://cems.example.com
+CEMS_API_KEY=cems_usr_...
+```
+
+### Environment Setup
+
+Add to your shell profile (`~/.zshrc` or `~/.bashrc`):
+
+```bash
+eval "$(cems env)"
+```
+
+This exports `CEMS_API_KEY` so the MCP server can authenticate.
+
+## Global Options
+
+```bash
+cems --version              # Show version
+cems --help                 # Show help
+cems -v COMMAND             # Verbose output
+cems --api-url URL COMMAND  # Override API URL
+cems --api-key KEY COMMAND  # Override API key
+```
+
+## Status & Health Commands
+
+### cems status
+
+Show CEMS status and configuration.
+
+```bash
+cems status
+```
+
+**Output:**
+- Server URL
+- User ID
+- Team ID (if configured)
+- Status
+- Backend type
+- Vector store
+- Graph store
+- Query synthesis enabled
+- Graph statistics
+
+### cems health
+
+Check server health.
+
+```bash
+cems health
+```
+
+**Output:**
+- Server status (healthy/unhealthy)
+- Service name
+- Mode
+- Auth status
+- Database status
+
+## Memory Commands
+
+### cems add
+
+Add a memory.
+
+```bash
+cems add "<content>"
+```
+
+**Options:**
+- `-s, --scope`: personal or shared (default: personal)
+- `-c, --category`: Memory category (default: general)
+- `-t, --tags`: Tags for the memory (multiple allowed)
+- `--source-ref`: Project reference (e.g., project:org/repo)
+- `--pin`: Pin memory (never auto-pruned)
+- `--pin-reason`: Reason for pinning
+
+**Examples:**
+```bash
+cems add "Always use TypeScript for new projects" -c preferences
+
+# Add a gate rule (for PreToolUse hook blocking)
+cems add "Bash: coolify deploy — Never use CLI for production" \
+    -c gate-rules --pin --source-ref "project:EpicCoders/pxls"
+
+# Add with tags
+cems add "JWT tokens expire after 24h" -t auth -t security
+```
+
+### cems search
+
+Search memories using unified retrieval pipeline.
+
+```bash
+cems search "<query>"
+```
+
+**Options:**
+- `-s, --scope`: personal, shared, or both (default: both)
+- `-l, --limit`: Maximum results (default: 10)
+- `-t, --max-tokens`: Token budget for results (default: 4000)
+- `--no-graph`: Disable graph traversal
+- `--no-synthesis`: Disable LLM query expansion
+- `--raw`: Debug mode - bypass filtering to see all results
+- `-v, --verbose`: Show full content without truncation
+
+**Examples:**
+```bash
+cems search "TypeScript preferences"
+cems search "coding style" --raw  # Debug mode
+cems search "architecture decisions" --limit 20
+cems search "deployment process" --scope shared
+```
+
+**Pipeline Stages:**
+
+The unified retrieval pipeline uses 5 stages:
+1. Query synthesis - LLM expands query into 2-5 search terms
+2. Vector + graph search - pgvector HNSW and graph traversal
+3. Relevance filtering - Removes results below threshold
+4. Temporal ranking - Time decay and priority boost
+5. Token budgeting - Greedy selection within token budget
+
+### cems list
+
+List memories via summary (shows memory counts by category).
+
+```bash
+cems list
+```
+
+**Options:**
+- `-s, --scope`: personal or shared (default: personal)
+
+**Output:**
+- Category breakdown with counts
+- Total memory count
+
+### cems edit
+
+Update a memory's content.
+
+```bash
+cems edit <memory_id> "<new content>"
+```
+
+**Example:**
+```bash
+cems edit abc123 "Updated content here"
+```
+
+### cems delete
+
+Delete or archive a memory.
+
+```bash
+cems delete <memory_id>
+```
+
+**Options:**
+- `--hard`: Permanently delete instead of archive
+
+**Examples:**
+```bash
+cems delete abc123        # Archive (soft delete)
+cems delete abc123 --hard # Permanent delete
+```
+
+## Rule Commands
+
+Create and load reusable rule bundles for constitution/playbook memories.
+
+### cems rule add
+
+Interactive rule wizard.
+
+```bash
+cems rule add
+```
+
+**Options:**
+- `--kind`: constitution or playbook
+- `--scope`: personal or shared
+
+**Interactive Prompts:**
+- Rule kind (constitution/playbook)
+- Principle number (for constitution) or rule code (for playbook)
+- Short title
+- Rule statement
+- Category (guidelines/project)
+- Scope (personal/shared)
+- Source reference
+- Extra tags
+- Pin memory
+- Pin reason
+
+**Example Session:**
+```bash
+cems rule add
+Rule kind [constitution]: constitution
+Principle number (optional, e.g. 13): 01
+Short title (optional): Code Quality
+Rule statement: Always write tests for new features
+Category [guidelines]: guidelines
+Scope [personal]: shared
+Source reference [foundation:constitution:v2]: 
+Extra tags (comma-separated, optional): testing,quality
+Pin memory? [Y/n]: y
+Pin reason [foundational constitution memory]: 
+Add this rule? [Y/n]: y
+```
+
+### cems rule load
+
+Load a reusable rule bundle.
+
+```bash
+cems rule load
+```
+
+**Options:**
+- `--file`: Path to rule bundle JSON file
+- `--kind`: Load default bundle for kind (constitution/playbook)
+- `--scope`: Override scope for all memories
+- `--dry-run`: Preview entries without writing memories
+
+**Examples:**
+```bash
+cems rule load --kind constitution
+cems rule load --kind playbook
+cems rule load --file custom-rules.json --scope shared
+cems rule load --kind constitution --dry-run
+```
+
+**Default Bundle Files:**
+- Constitution: `docs/constitution/foundation_memory_seed.json`
+- Playbook: `docs/constitution/playbook_memory_seed.json`
+
+**Bundle Format:**
+```json
+{
+  "name": "Foundation Constitution v2",
+  "source": "foundation:constitution:v2",
+  "scope": "personal",
+  "memories": [
+    {
+      "content": "Foundation 01 Code Quality: Always write tests for new features",
+      "category": "guidelines",
+      "tags": ["foundation", "constitution", "principle:01"],
+      "source_ref": "foundation:constitution:v2",
+      "pinned": true,
+      "pin_reason": "foundational constitution memory"
+    }
+  ]
+}
+```
+
+## Index Commands
+
+Index repositories to extract knowledge into CEMS.
+
+### cems index repo
+
+Index a git repository.
+
+```bash
+cems index repo <repo_url>
+```
+
+**Options:**
+- `-b, --branch`: Branch to index (default: main)
+- `-s, --scope`: personal or shared (default: shared)
+- `-p, --patterns`: Specific patterns to use (multiple allowed)
+
+**Examples:**
+```bash
+cems index repo https://github.com/org/repo
+cems index repo https://github.com/org/repo -b develop
+cems index repo https://github.com/org/repo -p readme_docs -p rspec_conventions
+```
+
+**How It Works:**
+1. Clones the repository
+2. Extracts knowledge (docs, conventions, schemas, etc.)
+3. Stores as pinned memories with project reference
+
+**Output:**
+- Files scanned
+- Knowledge extracted
+- Memories created
+- Patterns used
+- Errors (if any)
+
+### cems index path
+
+Index a local directory path (server-side).
+
+```bash
+cems index path <path>
+```
+
+**Options:**
+- `-s, --scope`: personal or shared (default: shared)
+- `-p, --patterns`: Specific patterns to use (multiple allowed)
+
+**Examples:**
+```bash
+cems index path /home/user/projects/myapp
+cems index path . -p python_conventions
+```
+
+**Note:** The path must be accessible from the CEMS server.
+
+### cems index patterns
+
+List available index patterns.
+
+```bash
+cems index patterns
+```
+
+**Output:**
+- Pattern name
+- Description
+- File patterns
+- Category
+
+**Example Patterns:**
+- `readme_docs` - Extract from README files
+- `rspec_conventions` - RSpec testing patterns
+- `python_conventions` - Python style patterns
+- `database_schemas` - Database schema definitions
+
+## Maintenance Commands
+
+Run maintenance jobs for memory system.
+
+### cems maintenance run
+
+Run a maintenance job immediately.
+
+```bash
+cems maintenance run <job_type>
+```
+
+**Job Types:**
+- `consolidation` - Merge semantic duplicates (cosine >= 0.92)
+- `summarization` - Compress old memories, prune stale
+- `reindex` - Rebuild embeddings, archive dead memories
+- `all` - Run all maintenance jobs
+
+**Examples:**
+```bash
+cems maintenance run consolidation
+cems maintenance run summarization
+cems maintenance run reindex
+cems maintenance run all
+```
+
+**Scheduled Jobs:**
+
+| Job | Schedule | Purpose |
+|-----|----------|------|
+| Consolidation | Nightly 3 AM | Merge semantic duplicates |
+| Observation Reflection | Nightly 3:30 AM | Condense observations per project |
+| Summarization | Weekly Sun 4 AM | Compress old memories, prune stale |
+| Re-indexing | Monthly 1st 5 AM | Rebuild embeddings, archive dead |
+
+## Setup & Update Commands
+
+### cems setup
+
+Set up CEMS hooks and credentials for your IDE.
+
+```bash
+cems setup
+```
+
+**Options:**
+- `--claude`: Install Claude Code hooks only
+- `--cursor`: Install Cursor hooks only
+- `--codex`: Install Codex commands/skills only
+- `--goose`: Install Goose extension config only
+- `--api-url`: CEMS server URL (non-interactive)
+- `--api-key`: CEMS API key (non-interactive)
+
+**Examples:**
+```bash
+cems setup              # Interactive
+cems setup --claude     # Claude Code only
+cems setup --cursor     # Cursor only
+cems setup --codex      # Codex only
+cems setup --goose      # Goose only
+cems setup --claude --api-url URL --api-key KEY  # Non-interactive
+```
+
+**What It Does:**
+1. Installs hooks, skills, and settings for selected IDE(s)
+2. Prompts for API credentials (if not provided)
+3. Saves credentials to `~/.cems/credentials` (chmod 600)
+4. Saves IDE choices to `~/.cems/install.conf`
+5. Registers MCP server in IDE config
+
+**Claude Code Installation:**
+- 6 hooks in `~/.claude/hooks/`
+- 6 skills in `~/.claude/skills/cems/`
+- 2 commands in `~/.claude/commands/`
+- MCP server in `~/.claude.json`
+- Settings merged into `~/.claude/settings.json`
+
+**Cursor Installation:**
+- 3 hooks in `~/.cursor/hooks/`
+- 5 skills in `~/.cursor/skills/`
+- MCP server in `~/.cursor/mcp.json`
+
+**Codex Installation:**
+- 3 commands in `~/.codex/commands/`
+- 2 skills in `~/.codex/skills/`
+- MCP server in `~/.codex/config.toml`
+
+**Goose Installation:**
+- MCP extension in `~/.config/goose/config.yaml`
+
+### cems update
+
+Update CEMS to the latest version.
+
+```bash
+cems update
+```
+
+**Options:**
+- `--hooks`: Only re-deploy hooks/skills (skip package upgrade)
+
+**Examples:**
+```bash
+cems update             # Full update (package + hooks)
+cems update --hooks     # Re-deploy hooks only (no package upgrade)
+```
+
+**What It Does:**
+1. Pulls latest from GitHub via `uv tool install`
+2. Re-deploys hooks/skills to IDEs from `~/.cems/install.conf`
+3. Logs update to `~/.cems/update.log`
+
+**Auto-Update:**
+
+CEMS auto-updates when you start a new Claude Code session. If your install is more than 24 hours old, the SessionStart hook pulls the latest version in the background.
+
+Disable auto-update:
+```bash
+CEMS_AUTO_UPDATE=0
+```
+
+### cems uninstall
+
+Remove hooks/skills.
+
+```bash
+cems uninstall
+```
+
+**Options:**
+- `--all`: Remove everything including credentials
+
+**Examples:**
+```bash
+cems uninstall        # Remove hooks/skills (keeps credentials)
+cems uninstall --all  # Remove everything including credentials
+```
+
+## Admin Commands
+
+Manage users and teams (requires `CEMS_ADMIN_KEY`).
+
+### cems admin users
+
+List all users.
+
+```bash
+cems admin users
+```
+
+### cems admin users create
+
+Create a new user.
+
+```bash
+cems admin users create <username>
+```
+
+**Returns:** API key for the new user
+
+**Example:**
+```bash
+cems admin users create john
+# Returns: {"api_key": "cems_usr_..."}
+```
+
+### cems admin teams
+
+List all teams.
+
+```bash
+cems admin teams
+```
+
+### cems admin teams create
+
+Create a new team.
+
+```bash
+cems admin teams create <team_name>
+```
+
+## Debug Commands
+
+### cems env
+
+Output shell commands to export CEMS environment variables.
+
+```bash
+eval "$(cems env)"
+```
+
+Exports:
+- `CEMS_API_URL`
+- `CEMS_API_KEY`
+
+### cems debug
+
+Debug utilities (implementation varies).
+
+```bash
+cems debug
+```
+
+## Exit Codes
+
+- `0` - Success
+- `1` - Error (auth failure, API error, etc.)
+- `2` - CLI usage error
+
+## Related Pages
+
+- [Skills & Commands](/guides/skills-commands) - Skills and slash commands reference
+- [Memory Management](/guides/memory-management) - Memory lifecycle and best practices
+- [Observer Daemon](/guides/observer-daemon) - Background session learning

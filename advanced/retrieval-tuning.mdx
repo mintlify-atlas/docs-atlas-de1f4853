@@ -1,0 +1,605 @@
+---
+title: Retrieval Tuning
+description: Optimize search parameters, modes, and scoring adjustments
+---
+
+CEMS uses a multi-stage retrieval pipeline to find relevant memories. Understanding how to tune retrieval parameters can significantly improve search quality.
+
+## Search Pipeline Overview
+
+CEMS retrieval pipeline has 9 stages:
+
+```mermaid
+flowchart LR
+    A[Query] --> B[Understanding]
+    B --> C[Synthesis]
+    C --> D[HyDE]
+    D --> E[Retrieval]
+    E --> F[RRF Fusion]
+    F --> G[Filtering]
+    G --> H[Scoring]
+    H --> I[Assembly]
+    I --> J[Results]
+```
+
+<Steps>
+  <Step title="Query Understanding">
+    LLM routes query to vector or hybrid strategy based on complexity
+  </Step>
+  <Step title="Query Synthesis">
+    LLM expands query into 2-5 search terms for better coverage
+  </Step>
+  <Step title="HyDE">
+    Generates hypothetical ideal answer for better vector matching
+  </Step>
+  <Step title="Candidate Retrieval">
+    pgvector HNSW (vector) + tsvector BM25 (full-text)
+  </Step>
+  <Step title="RRF Fusion">
+    Reciprocal Rank Fusion combines result lists
+  </Step>
+  <Step title="Relevance Filtering">
+    Removes results below threshold
+  </Step>
+  <Step title="Scoring Adjustments">
+    Time decay, priority boost, project-scoped boost
+  </Step>
+  <Step title="Token-Budgeted Assembly">
+    Greedy selection within token budget (default: 2000)
+  </Step>
+</Steps>
+
+---
+
+## Search Modes
+
+CEMS supports three search modes:
+
+<CardGroup cols={3}>
+  <Card title="Vector" icon="bolt">
+    Fast, 0 LLM calls - pure vector similarity
+  </Card>
+  <Card title="Hybrid" icon="layer-group">
+    Thorough, 3-4 LLM calls - query synthesis + HyDE + RRF
+  </Card>
+  <Card title="Auto" icon="wand-magic-sparkles">
+    Smart routing based on query complexity
+  </Card>
+</CardGroup>
+
+### Vector Mode
+
+**When to use:** Simple, precise queries with clear keywords.
+
+**How it works:**
+- Single vector search using query embedding
+- No query synthesis or HyDE
+- Fastest mode (0 LLM calls)
+- Best for exact matches
+
+```bash
+# CLI
+cems search "Python version" --mode vector
+
+# API
+curl -X POST http://localhost:8765/api/memory/search \
+  -H "Authorization: Bearer $CEMS_API_KEY" \
+  -d '{"query": "Python version", "mode": "vector"}'
+```
+
+### Hybrid Mode
+
+**When to use:** Complex, multi-domain, or preference queries.
+
+**How it works:**
+- Query synthesis: expands query into 2-5 search terms
+- HyDE: generates hypothetical answer for better matching
+- Vector + full-text search combined via RRF
+- LLM re-ranking for relevance
+- Best for recall and semantic understanding
+
+```bash
+# CLI
+cems search "recommend video editing resources" --mode hybrid
+
+# API
+curl -X POST http://localhost:8765/api/memory/search \
+  -H "Authorization: Bearer $CEMS_API_KEY" \
+  -d '{"query": "recommend video editing resources", "mode": "hybrid"}'
+```
+
+**Query Types That Benefit:**
+
+<Tabs>
+  <Tab title="Preference Queries">
+    Questions asking for recommendations based on user preferences.
+    
+    ```python
+    # From retrieval.py:119
+    preference_signals = [
+        "recommend", "suggest", "advice",
+        "resources", "tools", "accessories",
+        "what should", "would you",
+        "based on my", "given my",
+    ]
+    ```
+    
+    **Examples:**
+    - "recommend video editing resources"
+    - "what tools should I use for Python backend?"
+    - "suggest a cocktail based on my preferences"
+  </Tab>
+  
+  <Tab title="Temporal Queries">
+    Questions about chronological events or timelines.
+    
+    ```python
+    # From retrieval.py:65
+    temporal_patterns = [
+        "first", "last", "before", "after", "when",
+        "how many days", "how long", "earliest", "latest",
+        "most recent", "happened first",
+    ]
+    ```
+    
+    **Examples:**
+    - "when did I last deploy to production?"
+    - "which came first: doctor visit or camping trip?"
+    - "how many days since I upgraded Python?"
+  </Tab>
+  
+  <Tab title="Aggregation Queries">
+    Questions requiring information from multiple sessions.
+    
+    ```python
+    # From retrieval.py:90
+    aggregation_patterns = [
+        "how many", "how much", "total", "combined",
+        "all the times", "how often",
+        "different", "various", "all the different",
+    ]
+    ```
+    
+    **Examples:**
+    - "how many different doctors did I visit?"
+    - "what is the total amount I spent on luxury items?"
+    - "how many camping trips did I take in total?"
+  </Tab>
+</Tabs>
+
+### Auto Mode (Default)
+
+**When to use:** Let CEMS decide based on query complexity.
+
+**How it works:**
+
+```python
+# From retrieval.py:1129
+def route_to_strategy(intent: dict[str, Any]) -> str:
+    complexity = intent.get("complexity", "moderate")
+    requires_reasoning = intent.get("requires_reasoning", False)
+    domains = intent.get("domains", [])
+
+    # Simple queries -> vector
+    if complexity == "simple" and not requires_reasoning:
+        return "vector"
+
+    # Complex or multi-domain -> hybrid
+    if complexity == "complex" or requires_reasoning or len(domains) > 2:
+        return "hybrid"
+
+    return "hybrid"  # Default to hybrid
+```
+
+---
+
+## Retrieval Parameters
+
+### Core Parameters
+
+<ParamField path="query" type="string" required>
+  What to search for
+</ParamField>
+
+<ParamField path="limit" type="integer" default="10">
+  Maximum results to return (1-20)
+</ParamField>
+
+<ParamField path="max_tokens" type="integer" default="2000">
+  Token budget for context assembly
+</ParamField>
+
+<ParamField path="scope" type="enum" default="both">
+  Namespace to search: `personal`, `shared`, or `both`
+</ParamField>
+
+<ParamField path="project" type="string">
+  Project ID (e.g., `org/repo`) to boost project-scoped memories
+</ParamField>
+
+### Advanced Parameters
+
+<ParamField path="enable_graph" type="boolean" default="true">
+  Include graph traversal for related memories (currently not implemented)
+</ParamField>
+
+<ParamField path="enable_query_synthesis" type="boolean" default="true">
+  Use LLM to expand query for better retrieval. Set to `false` for vector-only mode.
+</ParamField>
+
+<ParamField path="raw" type="boolean" default="false">
+  Debug mode: bypass relevance filtering to see all candidate results
+</ParamField>
+
+### Configuration via Environment
+
+```bash
+# Vector search weight in hybrid mode
+CEMS_HYBRID_VECTOR_WEIGHT=0.4  # 0-1, default 0.4
+# Higher = favor vector similarity
+# Lower = favor BM25 full-text
+
+# Reranking input limit
+CEMS_RERANK_INPUT_LIMIT=40  # Default 40
+# How many candidates to send to LLM reranker
+
+# Project scoring
+CEMS_ENABLE_PROJECT_PENALTY=true
+CEMS_PROJECT_BOOST_FACTOR=1.3    # Same-project boost
+CEMS_PROJECT_PENALTY_FACTOR=0.8  # Different-project penalty
+```
+
+---
+
+## Scoring Adjustments
+
+CEMS applies multiple scoring factors to rank results:
+
+### 1. Priority Boost
+
+**Range:** 1.0-2.0x  
+**Source:** Memory metadata `priority` field
+
+```python
+# From retrieval.py:602
+score *= result.metadata.priority  # 1.0 default, up to 2.0 for hot memories
+```
+
+Set priority when storing:
+
+```bash
+cems add "Critical: Production DB password is in 1Password" \
+  --priority 2.0
+```
+
+### 2. Time Decay
+
+**Half-life:** 60 days since last access  
+**Formula:** `1.0 / (1.0 + days_since_access / 60)`
+
+```python
+# From retrieval.py:607
+now = datetime.now(UTC)
+days_since_access = (now - result.metadata.last_accessed).days
+time_decay = 1.0 / (1.0 + (days_since_access / 60))
+score *= time_decay
+```
+
+**Impact:**
+- 0 days: 100% score
+- 30 days: 67% score
+- 60 days: 50% score
+- 120 days: 33% score
+
+### 3. Pinned Boost
+
+**Boost:** 1.1x (10%)  
+**Source:** Memory metadata `pinned` field
+
+```python
+# From retrieval.py:613
+if result.metadata.pinned:
+    score *= 1.1
+```
+
+Pin important memories:
+
+```bash
+cems pin <memory_id>
+```
+
+### 4. Project-Scoped Scoring
+
+**Same project:** 1.3x boost  
+**Different project:** 0.8x penalty  
+**No project tag:** 0.9x penalty
+
+```python
+# From retrieval.py:619
+if project:
+    source_ref = result.metadata.source_ref or ""
+    if source_ref.startswith(f"project:{project}"):
+        score *= 1.3  # Same project boost
+    elif source_ref.startswith("project:"):
+        score *= 0.8  # Different project penalty
+    else:
+        score *= 0.9  # No project tag
+```
+
+Search with project context:
+
+```bash
+cems search "database migration" --project myorg/myrepo
+```
+
+---
+
+## Query Synthesis
+
+Query synthesis expands your query into multiple search terms for better coverage.
+
+### How It Works
+
+```python
+# From retrieval.py:166
+def synthesize_query(
+    query: str,
+    client: OpenRouterClient,
+    is_preference: bool = False,
+    profile_context: list[str] | None = None,
+) -> list[str]:
+```
+
+**For preference queries:**
+- Generates 4-5 search terms
+- Bridges semantic gap between question ("recommend X") and answer ("I use Y")
+- Uses profile context (actual user memories) for better expansion
+
+**For temporal queries:**
+- Generates 3-4 search terms
+- Focuses on date-related terms and chronological ordering
+- Searches for BOTH events in "which first/last" questions
+
+**For general queries:**
+- Generates 2-3 search terms
+- Stays within same domain (no over-generalization)
+- Prefers specific technical terms over generic words
+
+### Example Expansion
+
+<CodeGroup>
+```bash Preference Query
+Query: "recommend video editing resources"
+
+Synthesized:
+1. "I use video editing software"
+2. "Adobe Premiere Pro"
+3. "Final Cut Pro"
+4. "my favorite video editor"
+5. "I work with video production"
+```
+
+```bash Temporal Query
+Query: "which came first: doctor visit or camping trip?"
+
+Synthesized:
+1. "doctor visit date"
+2. "camping trip date"
+3. "when did I visit doctor"
+4. "when did I go camping"
+```
+
+```bash General Query
+Query: "Python testing framework"
+
+Synthesized:
+1. "pytest"
+2. "unittest framework"
+3. "Python test setup"
+```
+</CodeGroup>
+
+---
+
+## HyDE (Hypothetical Document Embeddings)
+
+HyDE generates a hypothetical answer, then searches for memories similar to that answer.
+
+### Why HyDE Works
+
+Queries and answers have different phrasing:
+- **Query:** "recommend video editing resources"
+- **Answer:** "I use Adobe Premiere Pro for video editing"
+
+HyDE bridges this gap by generating what an ideal answer would look like.
+
+### Implementation
+
+```python
+# From retrieval.py:803
+def generate_hypothetical_memory(
+    query: str,
+    client: OpenRouterClient,
+    is_preference: bool = False,
+    profile_context: list[str] | None = None,
+) -> str:
+```
+
+**For preference queries:**
+```text
+Prompt: Generate a hypothetical memory written FROM THE USER'S PERSPECTIVE.
+- Use first-person: "I use...", "I prefer..."
+- Mention SPECIFIC products, brands, tools by NAME
+- Include context about WHY they like it
+```
+
+**For temporal queries:**
+```text
+Prompt: Generate a hypothetical memory with specific dates/time references.
+- Include dates: "On March 15th..."
+- Mention sequence: "First X happened, then Y"
+- Include duration: "3 days before..."
+```
+
+---
+
+## RRF Fusion (Reciprocal Rank Fusion)
+
+Combines results from multiple retrievers (vector + full-text + query expansions).
+
+### Formula
+
+```python
+# From retrieval.py:933
+rrf_score = sum(weight_i / (k + rank_i)) for each retriever i
+
+# k = 60 (standard in literature)
+# weight_i = list weight (original query gets 2x vs expansions)
+```
+
+### QMD Enhancements
+
+**List Weights:**
+- Original query: 2.0x weight
+- Synthesized queries: 1.0x weight
+- Protects precision (original query results matter more)
+
+**Top-Rank Bonus:**
+- Rank 1: +0.05 bonus (per list)
+- Ranks 2-3: +0.02 bonus (per list)
+- Protects top hits from getting buried
+
+```python
+# From retrieval.py:936
+bonus = bonus_r1 if rank == 1 else (bonus_r23 if rank <= 3 else 0.0)
+rrf_scores[result.memory_id] += base + bonus
+```
+
+### Score Blending
+
+```python
+# From retrieval.py:966
+# Normalize RRF to 0-1, then blend with vector score
+norm_rrf = (rrf_score - min_rrf) / rrf_range
+result.score = 0.5 * norm_rrf + 0.5 * result.score
+```
+
+---
+
+## Token-Budgeted Assembly
+
+Selects results within token budget to fit in LLM context.
+
+### Standard Assembly
+
+```python
+# From retrieval.py:446
+def assemble_context(
+    results: list[SearchResult],
+    max_tokens: int = 2000,
+) -> tuple[list[SearchResult], int]:
+```
+
+**Greedy selection:**
+- Sort by score (descending)
+- Add results until token budget exhausted
+- Don't break early - try smaller subsequent results
+
+### Diverse Assembly (for aggregation queries)
+
+```python
+# From retrieval.py:286
+def assemble_context_diverse(
+    results: list[SearchResult],
+    max_tokens: int = 2000,
+    mmr_lambda: float = 0.6,
+) -> tuple[list[SearchResult], int]:
+```
+
+**MMR (Maximal Marginal Relevance):**
+```
+MMR = λ * relevance - (1-λ) * max_similarity_to_selected
+```
+
+**Why MMR:**
+- Aggregation queries need results from MULTIPLE sessions
+- Greedy selection can pick many similar results from same session
+- MMR balances relevance (60%) and diversity (40%)
+
+**Two-phase selection:**
+1. **Phase 1:** Take top result from each session using MMR
+2. **Phase 2:** Fill remaining budget using MMR across all results
+
+---
+
+## Tuning Examples
+
+<AccordionGroup>
+  <Accordion title="Improve recall for complex queries">
+    ```bash
+    # Use hybrid mode with higher token budget
+    cems search "recommend video editing resources" \
+      --mode hybrid \
+      --max-tokens 4000 \
+      --limit 20
+    ```
+  </Accordion>
+
+  <Accordion title="Faster searches for simple lookups">
+    ```bash
+    # Use vector mode, disable query synthesis
+    cems search "Python version" \
+      --mode vector \
+      --limit 5
+    ```
+  </Accordion>
+
+  <Accordion title="Boost recent memories">
+    ```bash
+    # Lower time decay half-life (favor recency)
+    # Edit config.py or set env var:
+    # Time decay uses 60-day half-life by default
+    # Can't be configured via env - hardcoded in retrieval.py:608
+    ```
+    
+    Alternatively, pin important memories:
+    ```bash
+    cems pin <memory_id>
+    ```
+  </Accordion>
+
+  <Accordion title="Debug poor search results">
+    ```bash
+    # Use raw mode to see all candidates before filtering
+    cems search "troublesome query" --raw
+    
+    # Check vector vs full-text weights
+    export CEMS_HYBRID_VECTOR_WEIGHT=0.7  # Favor vector over BM25
+    cems search "troublesome query"
+    ```
+  </Accordion>
+
+  <Accordion title="Optimize for project-scoped search">
+    ```bash
+    # Always pass project ID for relevant queries
+    cems search "database migration" --project myorg/myrepo
+    
+    # Adjust boost/penalty factors
+    export CEMS_PROJECT_BOOST_FACTOR=1.5    # Stronger boost
+    export CEMS_PROJECT_PENALTY_FACTOR=0.6  # Stronger penalty
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="MCP Integration" icon="plug" href="/advanced/mcp-integration">
+    Use CEMS with MCP-compatible agents
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/advanced/troubleshooting">
+    Debug search and retrieval issues
+  </Card>
+</CardGroup>

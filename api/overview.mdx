@@ -1,0 +1,114 @@
+---
+title: API Overview
+description: REST API endpoints for the CEMS memory system
+---
+
+## Base URL
+
+The CEMS REST API runs on port 8765 by default:
+
+```
+http://localhost:8765
+```
+
+For production deployments, use your configured domain:
+
+```
+https://cems.example.com
+```
+
+## Authentication
+
+All API endpoints (except `/health` and `/api/config/setup`) require authentication via Bearer token. See [Authentication](/api/authentication) for details.
+
+## API Endpoints
+
+### Memory Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/memory/add` | Store a new memory |
+| POST | `/api/memory/add_batch` | Store multiple memories at once |
+| POST | `/api/memory/search` | Search memories using semantic search |
+| POST | `/api/memory/forget` | Delete or archive a memory |
+| POST | `/api/memory/update` | Update existing memory content |
+| POST | `/api/memory/log-shown` | Log when memories are shown to user |
+| POST | `/api/memory/maintenance` | Trigger maintenance jobs |
+| POST | `/api/memory/conflict/resolve` | Resolve conflicting memories |
+| GET | `/api/memory/get` | Retrieve full document by ID |
+| GET | `/api/memory/list` | List all memories |
+| GET | `/api/memory/status` | Get system status |
+| GET | `/api/memory/foundation` | Get foundation guidelines |
+| GET | `/api/memory/gate-rules` | Get gate rules by project |
+| GET | `/api/memory/profile` | Get session profile context |
+| GET | `/api/memory/summary/personal` | Get personal memory summary |
+| GET | `/api/memory/summary/shared` | Get shared/team memory summary |
+
+### Index Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/index/repo` | Index a git repository |
+| POST | `/api/index/path` | Index a local directory |
+| GET | `/api/index/patterns` | List available index patterns |
+
+### Session Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/session/summarize` | Produce and store session summaries |
+
+### Tool Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/tool/learning` | Extract tool learning from usage |
+
+### Health & Setup
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/ping` | Simple ping endpoint |
+| GET | `/health` | Health check (no auth required) |
+| GET | `/api/config/setup` | Setup discovery (no auth required) |
+
+## Example Request
+
+```bash
+curl -X POST https://cems.example.com/api/memory/add \
+  -H "Authorization: Bearer cems_ak_abc123..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "I prefer Python for backend development",
+    "category": "preference"
+  }'
+```
+
+## Response Format
+
+All endpoints return JSON responses. Success responses typically include:
+
+```json
+{
+  "status": "success",
+  "data": { ... }
+}
+```
+
+Error responses include:
+
+```json
+{
+  "error": "Error message description"
+}
+```
+
+## Rate Limiting
+
+CEMS does not currently implement rate limiting, but it's recommended to batch operations when possible using endpoints like `/api/memory/add_batch`.
+
+## Admin API
+
+Admin endpoints are available at `/admin/*` and require `CEMS_ADMIN_KEY` authentication. These endpoints are used for user and team management.
+
+See the [Admin API documentation](/api/admin/users) for user management and [Teams](/api/admin/teams) for team management.

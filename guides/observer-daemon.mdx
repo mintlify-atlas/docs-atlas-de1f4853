@@ -1,0 +1,720 @@
+---
+title: Observer Daemon
+description: Background session learning for CEMS - automatic extraction of workflow patterns and insights
+---
+
+## Overview
+
+The CEMS Observer Daemon (`cems-observer`) is a background process that watches IDE sessions and automatically extracts high-level observations about your workflow. It runs on your local machine and periodically sends session transcripts to the CEMS server for analysis.
+
+**Key Features:**
+- Multi-tool support: Claude Code, Cursor, Codex CLI, Goose
+- Incremental learning: observations accumulate during sessions
+- Signal-based lifecycle: hooks notify daemon of events (compact, stop)
+- Staleness detection: auto-finalizes idle sessions
+- Singleton enforcement: only one daemon runs at a time
+
+## Architecture
+
+```
+IDE Sessions → Observer Daemon → CEMS Server → Memory Storage
+     ↓              ↓                  ↓
+  Hooks         Polling           LLM Analysis
+               Adapters          (Gemini 2.5 Flash)
+```
+
+### Components
+
+**Adapters:**
+
+Each adapter knows how to discover and extract sessions for a specific tool:
+
+| Adapter | Tool | Source | Format |
+|---------|------|--------|--------|
+| `ClaudeAdapter` | Claude Code | `~/.claude/projects/*/transcript.jsonl` | JSONL |
+| `CursorAdapter` | Cursor | `~/.cursor/*/transcript.jsonl` | JSONL |
+| `CodexAdapter` | Codex CLI | `~/.codex/transcripts/*.jsonl` | JSONL |
+| `GooseAdapter` | Goose | `~/.config/goose/sessions/*.db` | SQLite |
+
+**State Management:**
+
+Each session has a state file at `~/.cems/observer/{session_id}.json`:
+
+```json
+{
+  "session_id": "abc123...",
+  "tool": "claude",
+  "project_id": "org/repo",
+  "source_ref": "project:org/repo",
+  "last_observed_bytes": 50000,
+  "last_observed_at": 1709251200.0,
+  "observation_count": 3,
+  "epoch": 0,
+  "last_finalized_at": 0.0,
+  "last_growth_seen_at": 1709251300.0,
+  "is_done": false,
+  "last_observed_message_id": 42
+}
+```
+
+**Signals:**
+
+Hooks write signal files to communicate lifecycle events:
+
+Location: `~/.cems/observer/signals/{session_id}.json`
+
+```json
+{
+  "type": "compact",
+  "ts": 1709251200.0,
+  "tool": "claude"
+}
+```
+
+Signal types:
+- `compact` - Finalize current epoch, bump epoch number, continue watching
+- `stop` - Finalize current epoch, mark session done
+
+## How It Works
+
+### 1. Discovery
+
+Every 30 seconds, the daemon:
+
+1. Polls each adapter for active sessions (max_age_hours=2)
+2. Filters to sessions with recent activity
+3. Loads or creates state for each session
+
+**Discovery Queries:**
+
+- **Claude/Cursor/Codex:** Find JSONL files modified within 2 hours
+- **Goose:** Query SQLite for sessions with recent messages
+
+### 2. Processing
+
+For each discovered session:
+
+```
+1. Check signals (compact/stop) → handle lifecycle
+2. Check file growth → send incremental observation
+3. Check staleness → auto-finalize idle sessions
+```
+
+### 3. Growth Detection
+
+**Two-Phase Threshold:**
+
+1. **Phase 1: Cheap pre-filter**
+   - Check raw byte delta
+   - Must exceed `MIN_RAW_DELTA_BYTES = 10,000` bytes
+   - Fast file stat, no I/O
+
+2. **Phase 2: Real extracted-text gate**
+   - Extract text content from new bytes
+   - Must exceed `MIN_EXTRACTED_CHARS = 3,000` chars (~750 tokens)
+   - Ensures meaningful observations
+
+**Why Two Phases?**
+
+- Phase 1 filters out tiny changes (typing, cursor movements)
+- Phase 2 ensures enough content for LLM analysis
+- Avoids wasteful API calls on incremental edits
+
+### 4. Incremental Observations
+
+When growth threshold is met:
+
+1. Enrich session metadata (project, git branch, cwd)
+2. Extract new text content since last observation
+3. Build project context string
+4. Send to server via `/api/session/summarize`:
+   ```json
+   {
+     "content": "extracted text",
+     "session_id": "abc123",
+     "mode": "incremental",
+     "epoch": 0,
+     "session_tag": "session:abc123",
+     "project_context": "org/repo (main) — /path/to/project",
+     "source_ref": "project:org/repo"
+   }
+   ```
+5. Server uses Gemini 2.5 Flash to extract observations
+6. Update state: bytes, timestamp, observation_count
+
+**Observations Extracted:**
+
+- "User deploys via Coolify"
+- "Project uses PostgreSQL with pgvector"
+- "Testing: RSpec for Ruby, pytest for Python"
+- "Architecture: microservices with message queue"
+- "Workflow: PR review required before merge"
+
+### 5. Signal Handling
+
+**Compact Signal:**
+
+Sent by hooks during session compaction (memory cleanup):
+
+1. Finalize current epoch (if observations exist)
+2. Bump epoch number: `state.epoch += 1`
+3. Continue watching for new activity
+
+**Example:**
+- Epoch 0: Initial session observations
+- Compact → Finalize epoch 0 doc
+- Epoch 1: Post-compact observations
+- Compact → Finalize epoch 1 doc
+- Etc.
+
+**Stop Signal:**
+
+Sent by hooks on session end:
+
+1. Finalize current epoch (if observations exist)
+2. Mark session done: `state.is_done = True`
+3. Stop watching this session
+
+**Finalization Process:**
+
+1. Extract any remaining new content
+2. Send to server with `mode: "finalize"`
+3. Server generates comprehensive final summary
+4. Update `last_finalized_at` timestamp
+5. Clear signal file
+
+### 6. Staleness Detection
+
+If no file growth for `STALE_THRESHOLD = 300` seconds (5 minutes):
+
+1. Check: `time.time() - state.last_growth_seen_at > 300`
+2. Trigger auto-finalization
+3. Mark session done
+
+**Why Staleness Detection?**
+
+- Handles sessions without hooks (e.g., crashed IDE)
+- Ensures observations are eventually finalized
+- Prevents zombie sessions from clogging the queue
+
+**Protection:**
+
+Staleness only triggers if `observation_count > 0` (avoids finalizing empty sessions).
+
+## Installation & Setup
+
+The observer is automatically installed with CEMS:
+
+```bash
+curl -fsSL https://getcems.com/install.sh | bash
+```
+
+Or via `uv` directly:
+
+```bash
+uv tool install cems
+```
+
+This installs:
+- `cems` - Main CLI
+- `cems-server` - Server component
+- `cems-observer` - Observer daemon
+
+## Running the Daemon
+
+### Manual Start
+
+```bash
+cems-observer
+```
+
+Or via Python module:
+
+```bash
+python -m cems.observer
+```
+
+**Options:**
+- `--once` - Run one cycle and exit (for testing)
+- `--verbose`, `-v` - Enable debug logging
+
+### Automatic Start
+
+The observer is typically started automatically by hooks:
+
+**Claude Code:** `cems_session_start.py` hook
+
+**Start Logic:**
+1. Check if observer is already running (via PID file)
+2. If not, spawn daemon in background
+3. Write PID to `~/.cems/observer/daemon.pid`
+4. Continue hook execution
+
+### Singleton Enforcement
+
+Only one observer daemon can run at a time:
+
+1. Daemon acquires exclusive file lock on `~/.cems/observer/daemon.lock`
+2. If lock fails, another daemon is already running → exit
+3. Lock is held for the lifetime of the process
+4. On exit, lock is released automatically
+
+**Stale Daemon Cleanup:**
+
+On startup, the daemon kills any zombie processes from before singleton enforcement:
+
+```bash
+pgrep -f "cems[.-]observer"  # Find all observer processes
+kill -TERM <pid>             # Kill stale ones
+```
+
+## Configuration
+
+### Credentials
+
+The observer reads credentials from:
+
+1. `~/.cems/credentials` (preferred)
+2. Environment variables (fallback)
+
+**Credentials file:**
+
+```bash
+# ~/.cems/credentials
+CEMS_API_URL=https://cems.example.com
+CEMS_API_KEY=cems_usr_...
+```
+
+**Environment:**
+
+```bash
+export CEMS_API_URL=https://cems.example.com
+export CEMS_API_KEY=cems_usr_...
+```
+
+**Precedence:** Credentials file takes priority (env vars may be stale/session-specific).
+
+### Thresholds
+
+Configured in `observer/daemon.py`:
+
+```python
+MIN_RAW_DELTA_BYTES = 10_000    # Phase 1: raw byte pre-filter
+MIN_EXTRACTED_CHARS = 3_000     # Phase 2: extracted text gate (~750 tokens)
+POLL_INTERVAL = 30              # Polling interval (seconds)
+STALE_THRESHOLD = 300           # Staleness threshold (5 minutes)
+```
+
+**Tuning:**
+
+- Lower `MIN_EXTRACTED_CHARS` → more frequent observations (higher API costs)
+- Higher `MIN_EXTRACTED_CHARS` → fewer observations (may miss details)
+- Lower `POLL_INTERVAL` → more responsive (higher CPU usage)
+- Higher `POLL_INTERVAL` → less responsive (lower CPU usage)
+
+### Storage
+
+**State Directory:** `~/.cems/observer/`
+
+```
+~/.cems/observer/
+├── daemon.pid              # Current daemon PID
+├── daemon.lock             # Singleton lock file
+├── daemon.log              # Log file (if file logging enabled)
+├── signals/                # Signal files from hooks
+│   ├── abc123.json
+│   └── def456.json
+└── *.json                  # Session state files
+    ├── abc123.json
+    └── def456.json
+```
+
+**Migration:**
+
+The observer automatically migrates from old location:
+
+- Old: `~/.claude/observer/`
+- New: `~/.cems/observer/`
+
+Run once on first start after update.
+
+## Monitoring
+
+### Check Daemon Status
+
+```bash
+# Check if daemon is running
+ps aux | grep cems-observer
+
+# Check PID file
+cat ~/.cems/observer/daemon.pid
+
+# Check logs (if file logging enabled)
+tail -f ~/.cems/observer/daemon.log
+```
+
+### Test One Cycle
+
+Run once and exit:
+
+```bash
+cems-observer --once
+```
+
+**Output:**
+```
+Observations triggered: 3
+```
+
+### Verbose Mode
+
+Enable debug logging:
+
+```bash
+cems-observer --verbose
+```
+
+**Output:**
+```
+Observer daemon started (PID 12345, polling every 30s)
+Adapters: claude, cursor, codex, goose
+CEMS API: https://cems.example.com
+Thresholds: raw=10000B, extracted=3000chars
+Staleness threshold: 300s
+
+claude: 2 sessions (abc123ab, def456de)
+Cycle 0: 2 observation(s) triggered
+
+goose: 1 sessions (ghi789gh)
+Cycle 1: 1 observation(s) triggered
+```
+
+### Stop Daemon
+
+**Graceful shutdown:**
+
+```bash
+kill -TERM $(cat ~/.cems/observer/daemon.pid)
+```
+
+**Force kill:**
+
+```bash
+kill -9 $(cat ~/.cems/observer/daemon.pid)
+```
+
+**Cleanup:**
+
+PID file is automatically removed on graceful exit.
+
+## State Management
+
+### State File Format
+
+`~/.cems/observer/{session_id}.json`:
+
+```json
+{
+  "session_id": "abc123def456...",
+  "tool": "claude",
+  "project_id": "org/repo",
+  "source_ref": "project:org/repo",
+  "last_observed_bytes": 50000,
+  "last_observed_at": 1709251200.0,
+  "observation_count": 3,
+  "session_started": 1709250000.0,
+  "epoch": 0,
+  "last_finalized_at": 0.0,
+  "last_growth_seen_at": 1709251300.0,
+  "is_done": false,
+  "last_observed_message_id": 42
+}
+```
+
+**Fields:**
+
+- `session_id` - UUID from IDE
+- `tool` - claude, cursor, codex, or goose
+- `project_id` - org/repo format
+- `source_ref` - "project:org/repo" for memory tagging
+- `last_observed_bytes` - File offset for next extraction
+- `last_observed_at` - Timestamp of last observation
+- `observation_count` - Number of observations sent
+- `session_started` - Session start timestamp
+- `epoch` - Epoch number (bumped on compact)
+- `last_finalized_at` - Timestamp of last finalization
+- `last_growth_seen_at` - Staleness tracking
+- `is_done` - Session complete flag
+- `last_observed_message_id` - SQLite adapter watermark
+
+### State Cleanup
+
+Old state files are automatically cleaned up:
+
+**Schedule:** Every 100 poll cycles (~50 minutes)
+
+**Criteria:** Files older than 7 days
+
+**Manual cleanup:**
+
+```bash
+find ~/.cems/observer -name "*.json" -mtime +7 -delete
+```
+
+## Epoch Model
+
+The observer uses an epoch-based document model:
+
+**Epoch 0:**
+- Initial session observations
+- Document ID: `session:abc123`
+
+**Compact → Epoch 1:**
+- Post-compact observations
+- Document ID: `session:abc123:e1`
+
+**Compact → Epoch 2:**
+- Next epoch observations
+- Document ID: `session:abc123:e2`
+
+**Why Epochs?**
+
+- Allows finalization mid-session (during compacts)
+- Keeps observation documents focused and coherent
+- Prevents unbounded document growth
+- Each epoch gets its own summary and memory tags
+
+**Session Tag Format:**
+
+```python
+def session_tag(session_id: str, epoch: int = 0) -> str:
+    tag = f"session:{session_id[:12]}"
+    if epoch > 0:
+        tag += f":e{epoch}"
+    return tag
+```
+
+**Examples:**
+- `session:abc123def456`
+- `session:abc123def456:e1`
+- `session:abc123def456:e2`
+
+## Adapter Details
+
+### Claude Code Adapter
+
+**Source:** `~/.claude/projects/*/transcript.jsonl`
+
+**Discovery:**
+1. Scan `~/.claude/projects/`
+2. Find directories with `transcript.jsonl`
+3. Filter by modification time (< 2 hours)
+
+**Extraction:**
+1. Read JSONL from last observed byte offset
+2. Parse each line as JSON
+3. Extract user messages and assistant responses
+4. Format as conversation
+
+**Metadata:**
+- `project_id` from git remote in project directory
+- `git_branch` from git status
+- `cwd` from project directory path
+
+### Cursor Adapter
+
+**Source:** `~/.cursor/*/transcript.jsonl`
+
+**Discovery:**
+1. Scan `~/.cursor/`
+2. Find directories with `transcript.jsonl`
+3. Filter by modification time
+
+**Extraction:**
+- Same as Claude Code adapter
+
+### Codex Adapter
+
+**Source:** `~/.codex/transcripts/*.jsonl`
+
+**Discovery:**
+1. Scan `~/.codex/transcripts/`
+2. Find `*.jsonl` files
+3. Filter by modification time
+
+**Extraction:**
+- Same as Claude Code adapter
+
+### Goose Adapter
+
+**Source:** `~/.config/goose/sessions/*.db`
+
+**Discovery:**
+1. Scan `~/.config/goose/sessions/`
+2. Find `*.db` SQLite files
+3. Query for sessions with recent messages
+
+**Extraction:**
+1. Query: `SELECT * FROM messages WHERE id > ? ORDER BY id`
+2. Use `last_observed_message_id` as watermark
+3. Extract message content
+4. Format as conversation
+
+**Watermark:**
+
+State tracks `last_observed_message_id` to avoid re-reading messages:
+
+```python
+session.extra.setdefault("last_observed_message_id", state.last_observed_message_id)
+```
+
+## Error Handling
+
+### Consecutive Failures
+
+If the daemon encounters 10 consecutive failures:
+
+1. Log warning: "N consecutive failures, backing off"
+2. Switch to backoff interval: 300s (5 minutes)
+3. Continue polling at reduced rate
+4. Reset counter on successful cycle
+
+**Causes:**
+- Server unavailable
+- Network issues
+- API rate limiting
+- Authentication failures
+
+### Auth Failures
+
+**HTTP 401/403:**
+
+```
+RuntimeError: Auth failed (401): check CEMS_API_KEY
+```
+
+**Fix:**
+1. Verify credentials in `~/.cems/credentials`
+2. Test with `cems health`
+3. Restart daemon
+
+### Server Unavailable
+
+**Symptoms:**
+- Connection timeout errors
+- "Connection refused" messages
+
+**Fix:**
+1. Check server status
+2. Verify `CEMS_API_URL` is correct
+3. Check network connectivity
+4. Daemon will retry automatically
+
+### Corrupted State
+
+**Symptoms:**
+- JSON decode errors in logs
+- Observations re-sent from byte 0
+
+**Fix:**
+
+Delete corrupted state file:
+
+```bash
+rm ~/.cems/observer/<session_id>.json
+```
+
+Daemon will create fresh state on next cycle.
+
+## Performance
+
+### Resource Usage
+
+**CPU:** &lt;1% on average (30s polling interval)
+
+**Memory:** ~50MB resident set size
+
+**Disk I/O:**
+- State reads: ~10-20 per cycle
+- State writes: ~2-5 per cycle
+- Transcript reads: varies by session activity
+
+**Network:**
+- Observation API calls: 1-5 per cycle (when sessions are active)
+- Payload size: 3KB - 50KB per observation
+
+### Optimization
+
+**Two-Phase Threshold:**
+
+Phase 1 pre-filter eliminates 90%+ of cycles from expensive I/O:
+- File stat: ~1ms
+- File read + extraction: ~10-100ms
+
+**Batch Processing:**
+
+Multiple sessions are processed in parallel within each cycle.
+
+**State Caching:**
+
+State is loaded once per session per cycle, not per operation.
+
+## Troubleshooting
+
+### Observer Not Running
+
+**Check:**
+```bash
+ps aux | grep cems-observer
+cat ~/.cems/observer/daemon.pid
+```
+
+**Fix:**
+```bash
+cems-observer
+```
+
+### No Observations Being Created
+
+**Check threshold:**
+```bash
+cems-observer --once --verbose
+```
+
+**Common causes:**
+- File growth below threshold (< 10KB raw, < 3K chars extracted)
+- Session already marked done
+- Signal file stuck (old compact/stop signal)
+
+**Fix:**
+```bash
+rm ~/.cems/observer/signals/*.json  # Clear stale signals
+```
+
+### Observations Re-sent from Start
+
+**Cause:** Corrupted or missing state file
+
+**Fix:**
+```bash
+rm ~/.cems/observer/<session_id>.json
+```
+
+### Duplicate Daemons
+
+**Symptom:** Multiple observer processes running
+
+**Fix:**
+
+The daemon auto-kills stale processes on startup. Restart:
+
+```bash
+pkill -f cems-observer
+cems-observer
+```
+
+## Related Pages
+
+- [Skills & Commands](/guides/skills-commands) - Skills and slash commands reference
+- [CLI Usage](/guides/cli-usage) - Command-line interface reference
+- [Memory Management](/guides/memory-management) - Memory lifecycle and best practices

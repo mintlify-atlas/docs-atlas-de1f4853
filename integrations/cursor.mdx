@@ -1,0 +1,568 @@
+---
+title: "Cursor Integration"
+description: "CEMS integration with Cursor - MCP tools, hooks, and skills setup"
+---
+
+## Overview
+
+Cursor integrates with CEMS via:
+- **MCP server** (HTTP or stdio) for memory operations
+- **3 hooks** for profile injection, gate rules, and session tracking
+- **5 skills** for recall, remember, forget, share, and context
+- **1 rule** (always-on) that instructs the agent to search memory proactively
+
+Cursor doesn't have per-prompt hooks like Claude Code, so the MCP rule compensates by telling the agent to search before tasks.
+
+## What Gets Installed
+
+When you run `cems setup --cursor`, the installer creates:
+
+```
+~/.cursor/
+├── mcp.json                # MCP server config (merged)
+├── hooks/
+│   ├── cems_session_start.py    # Profile injection
+│   ├── cems_agent_response.py   # Transcript accumulation
+│   └── cems_stop.py             # Session end signal
+└── skills/
+    ├── cems-recall/SKILL.md     # Search memories
+    ├── cems-remember/SKILL.md   # Add personal memory
+    ├── cems-forget/SKILL.md     # Delete memory
+    ├── cems-share/SKILL.md      # Add team memory
+    └── cems-context/SKILL.md    # Memory status
+```
+
+### Shared Configuration
+
+```
+~/.cems/
+├── credentials             # API URL + key (chmod 600)
+└── install.conf            # IDE choices for cems update
+```
+
+## MCP Configuration
+
+The installer adds this block to `~/.cursor/mcp.json`:
+
+### Default (HTTP transport)
+
+```json
+{
+  "mcpServers": {
+    "cems": {
+      "type": "http",
+      "url": "https://mcp-cems.chocksy.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${CEMS_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+### Self-hosted (stdio transport)
+
+If you run your own CEMS server:
+
+```json
+{
+  "mcpServers": {
+    "cems": {
+      "command": "cems-mcp",
+      "args": [],
+      "env": {
+        "CEMS_API_URL": "https://your-server.com",
+        "CEMS_API_KEY": "cems_usr_..."
+      }
+    }
+  }
+}
+```
+
+Or HTTP to your own server:
+
+```json
+{
+  "mcpServers": {
+    "cems": {
+      "type": "http",
+      "url": "https://your-server.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${CEMS_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+## Hooks
+
+### cems_session_start.py
+
+**Trigger:** Session start
+
+**Purpose:** Injects user profile and foundation guidelines
+
+**What it does:**
+1. Fetches user profile via `/api/memory/profile`
+2. Fetches foundation guidelines via `/api/memory/foundation` (cached 15 min)
+3. Detects project from git remote
+4. Injects context as `<cems-profile>` and `<cems-foundation>` blocks
+5. Sets `CEMS_SESSION_ID` environment variable for other hooks
+
+**Output format:**
+```json
+{
+  "continue": true,
+  "additional_context": "<cems-profile>...</cems-profile>\n\n<cems-foundation>...</cems-foundation>",
+  "env": {
+    "CEMS_SESSION_ID": "cursor-abc123"
+  }
+}
+```
+
+**Configuration:**
+- `CEMS_API_URL` (env or `~/.cems/credentials`)
+- `CEMS_API_KEY` (env or `~/.cems/credentials`)
+
+### cems_agent_response.py
+
+**Trigger:** After each agent response
+
+**Purpose:** Accumulates transcript for observer analysis
+
+**What it does:**
+1. Reads `CEMS_SESSION_ID` from environment (set by `cems_session_start.py`)
+2. Appends agent response to `/tmp/cems-transcripts/{session_id}.jsonl`
+3. Limits each entry to 10K chars
+
+**Transcript format:**
+```jsonl
+{"timestamp": "2026-02-28T10:30:00", "role": "assistant", "text": "..."}
+{"timestamp": "2026-02-28T10:31:00", "role": "assistant", "text": "..."}
+```
+
+### cems_stop.py
+
+**Trigger:** Session end
+
+**Purpose:** Signals observer daemon to finalize session summary
+
+**What it does:**
+1. Reads session ID from environment
+2. Writes stop signal to `~/.cems/observer/signals/{session_id}.json`
+3. Observer daemon picks up signal and sends transcript to `/api/session/summarize`
+
+**Signal format:**
+```json
+{"type": "stop", "ts": 1709124600.0, "tool": "cursor"}
+```
+
+## Skills
+
+### cems-recall
+
+**File:** `~/.cursor/skills/cems-recall/SKILL.md`
+
+**Purpose:** Search memories with project-scoped boosting
+
+**Usage:**
+The agent invokes this skill when the user asks to recall something or when it needs context.
+
+**Implementation:**
+1. Detects project from `git remote get-url origin`
+   - SSH: `git@github.com:org/repo.git` → `org/repo`
+   - HTTPS: `https://github.com/org/repo.git` → `org/repo`
+2. Calls `memory_search` MCP tool:
+   ```json
+   {
+     "tool": "memory_search",
+     "arguments": {
+       "query": "authentication patterns in this project",
+       "scope": "both",
+       "max_results": 10,
+       "max_tokens": 4000,
+       "enable_graph": true,
+       "enable_query_synthesis": true,
+       "project": "org/repo"
+     }
+   }
+   ```
+3. For truncated results, calls `memory_get`:
+   ```json
+   {
+     "tool": "memory_get",
+     "arguments": {"memory_id": "abc12345"}
+   }
+   ```
+
+**Parameters:**
+- `query` (required) - Natural language search
+- `scope` (default: `"both"`) - `"personal"`, `"shared"`, or `"both"`
+- `max_results` (default: 10) - Max results (1-20)
+- `max_tokens` (default: 4000) - Token budget
+- `enable_graph` (default: true) - Include related memories
+- `enable_query_synthesis` (default: true) - Expand query with LLM
+- `project` (auto-detect) - Project ID for scoped boosting
+
+### cems-remember
+
+**File:** `~/.cursor/skills/cems-remember/SKILL.md`
+
+**Purpose:** Store personal memories with project context
+
+**Usage:**
+Invoked when the user says "remember this" or the agent discovers something worth persisting.
+
+**Implementation:**
+1. Detects project from git remote
+2. Chooses category: `preferences`, `conventions`, `architecture`, `decisions`, `workflow`, `errors`, `learnings`, or `general`
+3. Calls `memory_add` MCP tool:
+   ```json
+   {
+     "tool": "memory_add",
+     "arguments": {
+       "content": "The description of what to remember",
+       "scope": "personal",
+       "category": "decisions",
+       "tags": ["auth", "security"],
+       "source_ref": "project:org/repo"
+     }
+   }
+   ```
+
+**What to store:**
+- User preferences and style choices
+- Project conventions and naming patterns
+- Architecture and infrastructure decisions
+- Debugging insights and recurring solutions
+- Workflow patterns and deployment processes
+
+**What NOT to store:**
+- Session-specific context (current task, temporary state)
+- Information already in the codebase
+- Build output or error messages being debugged right now
+- Speculative conclusions from a single observation
+
+### cems-share
+
+**File:** `~/.cursor/skills/cems-share/SKILL.md`
+
+**Purpose:** Store team-wide memories
+
+**Same as `cems-remember` but with `scope: "shared"`**
+
+### cems-forget
+
+**File:** `~/.cursor/skills/cems-forget/SKILL.md`
+
+**Purpose:** Delete or archive memories
+
+**Implementation:**
+Calls `memory_forget` MCP tool:
+```json
+{
+  "tool": "memory_forget",
+  "arguments": {
+    "memory_id": "abc12345",
+    "hard_delete": false
+  }
+}
+```
+
+### cems-context
+
+**File:** `~/.cursor/skills/cems-context/SKILL.md`
+
+**Purpose:** Show memory system status
+
+**Displays:**
+- Session ID
+- Current project
+- Recent memories count
+- Observer daemon status
+
+## MCP Tools
+
+CEMS exposes these MCP tools to Cursor:
+
+### memory_search
+
+**Purpose:** Search memories with semantic retrieval, graph traversal, and time decay
+
+**Parameters:**
+```typescript
+{
+  query: string;              // Required: natural language query
+  scope?: "personal" | "shared" | "both";  // Default: "both"
+  max_results?: number;       // Default: 10, range: 1-20
+  max_tokens?: number;        // Default: 4000
+  enable_graph?: boolean;     // Default: true
+  enable_query_synthesis?: boolean;  // Default: true
+  project?: string;           // Project ID (org/repo) for scoped boosting
+  raw?: boolean;              // Debug mode: bypass relevance filtering
+}
+```
+
+**Returns:**
+```json
+{
+  "success": true,
+  "results": [
+    {
+      "memory_id": "abc12345",
+      "content": "Deployment uses Coolify with Docker Compose",
+      "category": "workflow",
+      "tags": ["deployment", "docker"],
+      "score": 0.87,
+      "truncated": false
+    }
+  ]
+}
+```
+
+### memory_add
+
+**Purpose:** Store a memory (personal or shared scope)
+
+**Parameters:**
+```typescript
+{
+  content: string;            // Required: memory content
+  scope?: "personal" | "shared";  // Default: "personal"
+  category?: string;          // Default: "general"
+  tags?: string[];            // Optional tags
+  source_ref?: string;        // e.g., "project:org/repo"
+  priority?: number;          // 0-10, default: 5
+}
+```
+
+**Returns:**
+```json
+{
+  "success": true,
+  "memory_id": "abc12345"
+}
+```
+
+### memory_get
+
+**Purpose:** Fetch full memory by ID (for truncated search results)
+
+**Parameters:**
+```typescript
+{
+  memory_id: string;  // Required
+}
+```
+
+**Returns:**
+```json
+{
+  "success": true,
+  "memory": {
+    "id": "abc12345",
+    "content": "Full content here...",
+    "category": "workflow",
+    "tags": ["deployment"],
+    "created_at": "2026-02-20T10:30:00Z",
+    "updated_at": "2026-02-28T15:00:00Z"
+  }
+}
+```
+
+### memory_forget
+
+**Purpose:** Archive or permanently delete a memory
+
+**Parameters:**
+```typescript
+{
+  memory_id: string;          // Required
+  hard_delete?: boolean;      // Default: false (soft delete)
+}
+```
+
+### memory_update
+
+**Purpose:** Update an existing memory's content
+
+**Parameters:**
+```typescript
+{
+  memory_id: string;          // Required
+  content: string;            // New content
+}
+```
+
+### memory_maintenance
+
+**Purpose:** Run consolidation, summarization, or reindex jobs
+
+**Parameters:**
+```typescript
+{
+  job: "consolidation" | "summarization" | "reindex";
+}
+```
+
+## Setup Verification
+
+### 1. Check MCP config
+
+```bash
+cat ~/.cursor/mcp.json
+```
+
+Should include a `cems` server entry.
+
+### 2. Check hooks
+
+```bash
+ls ~/.cursor/hooks/cems_*.py
+```
+
+Expected:
+```
+~/.cursor/hooks/cems_session_start.py
+~/.cursor/hooks/cems_agent_response.py
+~/.cursor/hooks/cems_stop.py
+```
+
+### 3. Check skills
+
+```bash
+ls ~/.cursor/skills/
+```
+
+Expected:
+```
+cems-recall/
+cems-remember/
+cems-forget/
+cems-share/
+cems-context/
+```
+
+### 4. Check credentials
+
+```bash
+cat ~/.cems/credentials
+```
+
+Should show:
+```
+CEMS_API_URL=https://your-server.com
+CEMS_API_KEY=cems_usr_...
+```
+
+### 5. Test MCP connection
+
+In Cursor, open the MCP panel and verify `cems` server shows as connected.
+
+### 6. Test search
+
+In Cursor chat:
+```
+Search my memories for "deployment"
+```
+
+The agent should invoke the `cems-recall` skill and call `memory_search`.
+
+## How It Works
+
+### On Session Start
+
+1. `cems_session_start.py` runs
+2. Fetches profile and foundation guidelines
+3. Detects project from git remote
+4. Injects context into session
+5. Sets `CEMS_SESSION_ID` env var
+
+### During Session
+
+1. Agent consults always-on rule: "Search memory before starting tasks"
+2. Agent invokes `cems-recall` skill
+3. Skill detects project and calls `memory_search` MCP tool
+4. Memories displayed to agent
+5. Agent uses memories to inform work
+6. When discoveries made, agent invokes `cems-remember` skill
+7. `cems_agent_response.py` logs each response to transcript
+
+### On Session End
+
+1. `cems_stop.py` writes stop signal
+2. Observer daemon reads transcript from `/tmp/cems-transcripts/{session_id}.jsonl`
+3. Sends to `/api/session/summarize`
+4. Server extracts high-level observations
+5. Observations stored as memories
+
+## Cursor Plugin (Alternative)
+
+CEMS also has an official Cursor plugin available in the marketplace:
+
+**Installation:**
+1. Search for "CEMS" in Cursor plugin marketplace
+2. Click "Add to Cursor"
+3. Set `CEMS_API_KEY` environment variable
+4. Restart Cursor
+
+**What it includes:**
+- MCP config (HTTP to `https://mcp-cems.chocksy.com/mcp`)
+- Gate rule hooks for shell and MCP execution
+- Skills for recall and remember
+- Always-on rule for proactive memory usage
+
+**Plugin file structure:**
+```
+.cursor-plugin/
+├── plugin.json             # Metadata
+├── mcp.json                # MCP server config
+├── hooks/
+│   ├── cems_gate_rules.py      # Shell gate rules
+│   ├── cems_mcp_gate.py        # MCP gate rules
+│   └── cems_stop.py            # Session end signal
+├── rules/
+│   └── cems-memory.mdc         # Always-on rule
+└── skills/
+    ├── cems-recall/SKILL.md
+    └── cems-remember/SKILL.md
+```
+
+## Troubleshooting
+
+### MCP tools not appearing
+
+1. Check MCP config: `cat ~/.cursor/mcp.json`
+2. Verify `CEMS_API_KEY` environment variable is set
+3. Restart Cursor
+4. Check MCP panel for connection errors
+
+### Skills not working
+
+1. Verify files exist: `ls ~/.cursor/skills/cems-*/`
+2. Restart Cursor
+3. Try invoking directly: "Use the cems-recall skill to search for X"
+
+### Hooks not running
+
+1. Check hook files: `ls ~/.cursor/hooks/cems_*.py`
+2. Test manually:
+   ```bash
+   echo '{"session_id": "test"}' | uv run ~/.cursor/hooks/cems_session_start.py
+   ```
+3. Check Python version: `python3 --version` (needs 3.11+)
+4. Check uv installed: `uv --version`
+
+### No memories in search results
+
+1. Test CLI: `cems search "test query"`
+2. Check server connection: `cems health`
+3. Verify credentials: `cat ~/.cems/credentials`
+4. Check server logs if self-hosting
+
+## Next Steps
+
+- [Claude Code Integration](/integrations/claude-code) - Deepest integration with 6 hooks
+- [Codex Integration](/integrations/codex) - Command-based interface
+- [Goose Integration](/integrations/goose) - MCP-only extension

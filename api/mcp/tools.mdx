@@ -1,0 +1,278 @@
+---
+title: MCP Tools
+description: Detailed reference for CEMS memory tools exposed via MCP
+---
+
+CEMS exposes six memory management tools through the Model Context Protocol.
+
+## memory_search
+
+Search memories using a unified 5-stage retrieval pipeline: query synthesis, vector+graph search, relevance filtering, temporal ranking, and token budgeting.
+
+<ParamField name="query" type="string" required>
+  What to search for
+</ParamField>
+
+<ParamField name="scope" type="enum" default="both">
+  Namespace to search: `personal`, `shared`, or `both`
+</ParamField>
+
+<ParamField name="max_results" type="integer" default="10">
+  Maximum results to return (1-20)
+</ParamField>
+
+<ParamField name="max_tokens" type="integer" default="4000">
+  Token budget for results
+</ParamField>
+
+<ParamField name="enable_graph" type="boolean" default="true">
+  Include graph traversal for related memories
+</ParamField>
+
+<ParamField name="enable_query_synthesis" type="boolean" default="true">
+  Use LLM to expand query for better retrieval
+</ParamField>
+
+<ParamField name="raw" type="boolean" default="false">
+  Debug mode: bypass filtering to see all results
+</ParamField>
+
+<ParamField name="project" type="string">
+  Project ID (e.g., `org/repo`) to boost project-scoped memories
+</ParamField>
+
+### Example
+
+```python
+result = memory_search(
+    query="database optimization techniques",
+    scope="both",
+    max_results=5,
+    enable_graph=True,
+    enable_query_synthesis=True
+)
+```
+
+### Response
+
+```json
+{
+  "success": true,
+  "results": [
+    {
+      "id": "mem_123",
+      "content": "PostgreSQL indexing strategies...",
+      "score": 0.92,
+      "category": "technical",
+      "scope": "personal",
+      "created_at": "2024-02-15T10:30:00Z"
+    }
+  ],
+  "count": 1,
+  "query_synthesis_used": true
+}
+```
+
+## memory_add
+
+Store a memory in personal or shared namespace.
+
+<ParamField name="content" type="string" required>
+  What to remember
+</ParamField>
+
+<ParamField name="scope" type="enum" default="personal">
+  Namespace: `personal` or `shared`
+</ParamField>
+
+<ParamField name="category" type="string" default="general">
+  Category for organization
+</ParamField>
+
+<ParamField name="tags" type="array" default="[]">
+  Optional tags for the memory
+</ParamField>
+
+<ParamField name="infer" type="boolean" default="true">
+  Use LLM for fact extraction (`true`) or store raw (`false`). Set to `false` for bulk imports for much faster performance.
+</ParamField>
+
+<ParamField name="source_ref" type="string">
+  Project reference for scoped recall (e.g., `project:org/repo`)
+</ParamField>
+
+### Example
+
+```python
+result = memory_add(
+    content="Alice prefers dark mode and uses PostgreSQL",
+    scope="personal",
+    category="preferences",
+    tags=["ui", "database"],
+    infer=True
+)
+```
+
+### Bulk Import Example
+
+```python
+# For bulk imports, disable inference for 10x speed improvement
+for item in large_dataset:
+    memory_add(
+        content=item.text,
+        scope="shared",
+        infer=False,  # Much faster for bulk operations
+        source_ref=f"project:{item.project}"
+    )
+```
+
+### Response
+
+```json
+{
+  "success": true,
+  "memory_id": "mem_456",
+  "facts_extracted": 2,
+  "message": "Memory stored"
+}
+```
+
+## memory_get
+
+Retrieve a full memory document by ID.
+
+<ParamField name="memory_id" type="string" required>
+  ID of the memory to retrieve
+</ParamField>
+
+### Example
+
+```python
+result = memory_get(memory_id="mem_456")
+```
+
+### Response
+
+```json
+{
+  "success": true,
+  "memory": {
+    "id": "mem_456",
+    "content": "Full memory content here...",
+    "scope": "personal",
+    "category": "preferences",
+    "tags": ["ui", "database"],
+    "created_at": "2024-02-28T14:00:00Z",
+    "updated_at": "2024-02-28T14:00:00Z"
+  }
+}
+```
+
+<Note>
+Use `memory_get` when search returns truncated results and you need the complete content.
+</Note>
+
+## memory_forget
+
+Delete or archive a memory.
+
+<ParamField name="memory_id" type="string" required>
+  ID of memory to forget
+</ParamField>
+
+<ParamField name="hard_delete" type="boolean" default="false">
+  Permanently delete if `true`, otherwise archive
+</ParamField>
+
+### Example
+
+```python
+# Soft delete (archive)
+result = memory_forget(
+    memory_id="mem_456",
+    hard_delete=False
+)
+
+# Hard delete (permanent)
+result = memory_forget(
+    memory_id="mem_456",
+    hard_delete=True
+)
+```
+
+### Response
+
+```json
+{
+  "success": true,
+  "message": "Memory archived"
+}
+```
+
+## memory_update
+
+Update an existing memory's content.
+
+<ParamField name="memory_id" type="string" required>
+  ID of the memory to update
+</ParamField>
+
+<ParamField name="content" type="string" required>
+  New content for the memory
+</ParamField>
+
+### Example
+
+```python
+result = memory_update(
+    memory_id="mem_456",
+    content="Alice prefers dark mode, uses PostgreSQL, and works remotely"
+)
+```
+
+### Response
+
+```json
+{
+  "success": true,
+  "memory_id": "mem_456",
+  "message": "Memory updated"
+}
+```
+
+## memory_maintenance
+
+Run memory maintenance jobs for optimization and housekeeping.
+
+<ParamField name="job_type" type="enum" default="consolidation">
+  Type of maintenance: `consolidation`, `summarization`, `reindex`, or `all`
+</ParamField>
+
+### Job Types
+
+- **consolidation** - Merge duplicate or similar memories
+- **summarization** - Generate summaries of memory collections
+- **reindex** - Rebuild search indexes
+- **all** - Run all maintenance tasks
+
+### Example
+
+```python
+result = memory_maintenance(job_type="consolidation")
+```
+
+### Response
+
+```json
+{
+  "success": true,
+  "job_type": "consolidation",
+  "items_processed": 42,
+  "items_merged": 7,
+  "duration_ms": 1523
+}
+```
+
+<Warning>
+Maintenance operations can be resource-intensive. Run them during off-peak hours.
+</Warning>

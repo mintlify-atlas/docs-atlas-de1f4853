@@ -1,0 +1,541 @@
+---
+title: "Codex Integration"
+description: "CEMS integration with Codex - commands, skills, and MCP configuration"
+---
+
+## Overview
+
+Codex integrates with CEMS via:
+- **MCP server** (stdio) in `config.toml`
+- **3 commands** for recall, remember, and foundation guidelines
+- **2 skills** for advanced recall and remember workflows
+
+Codex focuses on command-based interaction rather than hooks.
+
+## What Gets Installed
+
+When you run `cems setup --codex`, the installer creates:
+
+```
+~/.codex/
+├── config.toml             # MCP server config (merged)
+├── commands/
+│   ├── recall.md           # Search memories
+│   ├── remember.md         # Add memory
+│   └── foundation.md       # Foundation guidelines
+└── skills/
+    ├── recall/SKILL.md     # Search memories
+    └── remember/SKILL.md   # Add memory
+```
+
+### Shared Configuration
+
+```
+~/.cems/
+├── credentials             # API URL + key (chmod 600)
+└── install.conf            # IDE choices for cems update
+```
+
+## MCP Configuration
+
+The installer adds this block to `~/.codex/config.toml`:
+
+```toml
+[mcp.cems]
+command = "cems-mcp"
+args = []
+timeout = 300
+
+[mcp.cems.env]
+CEMS_API_URL = "https://your-server.com"
+CEMS_API_KEY = "cems_usr_..."
+```
+
+**Notes:**
+- Uses `stdio` transport (requires `pip install cems`)
+- Credentials passed via environment variables
+- 300 second timeout for long-running queries
+
+## Commands
+
+### /recall
+
+**File:** `~/.codex/commands/recall.md`
+
+**Purpose:** Search memories for relevant information from past sessions
+
+**Usage:**
+```
+/recall <query>
+/recall --limit 10 authentication patterns
+/recall --scope shared team conventions
+```
+
+**Arguments:**
+- `$ARGUMENTS` - The search query (natural language)
+
+**Options:**
+- `--limit N` (default: 5) - Maximum results to return
+- `--scope` (default: both) - `personal`, `shared`, or `both`
+
+**Implementation:**
+
+When this command is invoked, Codex should:
+
+1. **Parse the arguments** to extract:
+   - `--limit <N>` if provided (default: 5)
+   - `--scope <personal|shared|both>` if provided (default: "both")
+   - The remaining text is the search query
+
+2. **Detect the current project** from the working directory:
+   - Run `git remote get-url origin` to extract `org/repo` format
+   - SSH: `git@github.com:org/repo.git` → `org/repo`
+   - HTTPS: `https://github.com/org/repo.git` → `org/repo`
+   - Pass this as the `project` parameter to boost same-project results
+
+3. **Search via MCP:**
+   ```
+   Use memory_search with:
+   - query: <the query>
+   - max_results: <limit>
+   - scope: <scope>
+   - project: <detected project ID, e.g., "Chocksy/cems">
+   ```
+
+4. **For truncated results**, fetch the full document:
+   ```
+   Use memory_get with:
+   - memory_id: <the truncated result's memory_id>
+   ```
+
+5. **Present results** in a clear format:
+   ```
+   ## Memory Recall: "<query>"
+
+   Found N memories:
+
+   ### 1. [category] (id: abc123)
+   <content>
+
+   ### 2. [category] (id: def456)
+   <content>
+   ```
+
+**Example:**
+
+User: `/recall hook development`
+
+Codex should:
+1. Detect project from git remote (e.g., "Chocksy/cems")
+2. Call `memory_search` with query="hook development", max_results=5, project="Chocksy/cems"
+3. Format and display results
+
+**If No Results:**
+
+```
+No memories found for '<query>'. Try a different search term or use `/remember` to store new memories.
+```
+
+### /remember
+
+**File:** `~/.codex/commands/remember.md`
+
+**Purpose:** Store memories with project context, categories, and tags
+
+**Usage:**
+```
+/remember <content>
+/remember --scope shared API endpoints follow REST conventions
+/remember --category decisions We use PostgreSQL for persistence
+```
+
+**Arguments:**
+- `$ARGUMENTS` - The content to remember
+
+**Options:**
+- `--scope` (default: personal) - `personal` or `shared`
+- `--category` (default: general) - `preferences`, `conventions`, `architecture`, `decisions`, `workflow`, `errors`, `learnings`, or `general`
+- `--tags` (optional) - Comma-separated tags
+
+**Implementation:**
+
+When this command is invoked, Codex should:
+
+1. **Parse the arguments** to extract:
+   - `--scope <personal|shared>` if provided (default: "personal")
+   - `--category <category>` if provided (default: "general")
+   - `--tags <tag1,tag2>` if provided
+   - The remaining text is the content to remember
+
+2. **Detect the current project** from git remote (same as `/recall`)
+
+3. **Store via MCP:**
+   ```
+   Use memory_add with:
+   - content: <the content>
+   - scope: <scope>
+   - category: <category>
+   - tags: <tags array>
+   - source_ref: "project:<detected project ID>"
+   ```
+
+4. **Confirm storage:**
+   ```
+   ✓ Memory stored (id: abc12345)
+   Scope: personal
+   Category: decisions
+   Project: Chocksy/cems
+   ```
+
+**Example:**
+
+User: `/remember --category workflow Deployment uses Coolify with Docker Compose`
+
+Codex should:
+1. Detect project from git remote
+2. Call `memory_add` with content="Deployment uses Coolify with Docker Compose", scope="personal", category="workflow", source_ref="project:Chocksy/cems"
+3. Display confirmation
+
+**What to Store:**
+- User preferences and style choices
+- Project conventions and naming patterns
+- Architecture and infrastructure decisions
+- Debugging insights and solutions to recurring problems
+- Workflow patterns and deployment processes
+
+**What NOT to Store:**
+- Session-specific context (current task, temporary state)
+- Information already in the codebase
+- Build output or error messages being debugged right now
+- Speculative conclusions from a single observation
+
+### /foundation
+
+**File:** `~/.codex/commands/foundation.md`
+
+**Purpose:** Display foundation guidelines for the current project
+
+**Usage:**
+```
+/foundation
+```
+
+**Implementation:**
+
+1. Detect current project from git remote
+2. Fetch via MCP (or direct API call to `/api/memory/foundation?project=org/repo`)
+3. Display formatted guidelines:
+   ```
+   ## Foundation Guidelines
+
+   ### Global
+   - Always write tests for public APIs
+   - Use TypeScript for type safety
+
+   ### Project: Chocksy/cems
+   - Memory search should always include project parameter
+   - Use snake_case for Python code
+   ```
+
+**Note:** Foundation guidelines are typically loaded at session start via hooks in other IDEs. Codex uses a command for on-demand access.
+
+## Skills
+
+### recall
+
+**File:** `~/.codex/skills/recall/SKILL.md`
+
+**Purpose:** Advanced memory search workflow with project-scoped boosting
+
+**When to use:**
+Agent invokes this skill when:
+- User asks to recall something
+- Agent needs context before starting work
+- User says "what do we know about..."
+
+**Workflow:**
+
+1. **Detect the current project** from the working directory:
+   - Run `git remote get-url origin` to extract `org/repo` format
+   - SSH: `git@github.com:org/repo.git` → `org/repo`
+   - HTTPS: `https://github.com/org/repo.git` → `org/repo`
+
+2. Formulate a natural language query
+
+3. Call `memory_search` with appropriate parameters (always include `project`):
+   ```json
+   {
+     "tool": "memory_search",
+     "arguments": {
+       "query": "authentication patterns in this project",
+       "scope": "both",
+       "max_results": 10,
+       "max_tokens": 4000,
+       "enable_graph": true,
+       "enable_query_synthesis": true,
+       "project": "org/repo"
+     }
+   }
+   ```
+
+4. If any results are truncated, use `memory_get` to fetch the full content:
+   ```json
+   {
+     "tool": "memory_get",
+     "arguments": {"memory_id": "the-memory-id-from-search-result"}
+   }
+   ```
+
+5. Use the results to inform your work
+
+**Parameters:**
+
+| Parameter | Default | Purpose |
+|-----------|---------|----------|
+| `query` | (required) | Natural language search query |
+| `scope` | `"both"` | `"personal"`, `"shared"`, or `"both"` |
+| `max_results` | `10` | Maximum results (1-20) |
+| `max_tokens` | `4000` | Token budget for results |
+| `enable_graph` | `true` | Include related memories via graph traversal |
+| `enable_query_synthesis` | `true` | Expand query with LLM for better retrieval |
+| `raw` | `false` | Debug mode: bypass relevance filtering |
+| `project` | (auto-detect) | Project ID (org/repo) — always pass this to boost same-project results |
+
+**Search Tips:**
+- **Always pass `project`** — auto-detect from git remote to filter cross-project noise
+- Use natural language: "how do we handle authentication" > "auth"
+- Be specific: "Python backend database conventions" > "conventions"
+- The system uses semantic matching, not just keywords
+- Results include relevance scores and time decay ranking
+
+### remember
+
+**File:** `~/.codex/skills/remember/SKILL.md`
+
+**Purpose:** Store memories with project context and categories
+
+**When to use:**
+Agent invokes this skill when:
+- User says "remember this"
+- Agent discovers something worth persisting
+- User makes a decision that should be recorded
+
+**Workflow:**
+
+1. Determine the content to store
+
+2. Choose the appropriate scope:
+   - `personal` (default) — only you see it
+   - `shared` — visible to the whole team
+
+3. Pick a category: `preferences`, `conventions`, `architecture`, `decisions`, `workflow`, `errors`, `learnings`, or `general`
+
+4. **Detect the current project** from git remote for scoped recall:
+   - Run `git remote get-url origin` to extract `org/repo` format
+   - SSH: `git@github.com:org/repo.git` → `org/repo`
+   - HTTPS: `https://github.com/org/repo.git` → `org/repo`
+   - Pass as `source_ref: "project:org/repo"`
+
+5. Call `memory_add`:
+   ```json
+   {
+     "tool": "memory_add",
+     "arguments": {
+       "content": "The description of what to remember",
+       "scope": "personal",
+       "category": "decisions",
+       "tags": ["auth", "security"],
+       "source_ref": "project:org/repo"
+     }
+   }
+   ```
+
+## Setup Verification
+
+### 1. Check MCP config
+
+```bash
+cat ~/.codex/config.toml | grep -A 10 "\[mcp.cems\]"
+```
+
+Should show:
+```toml
+[mcp.cems]
+command = "cems-mcp"
+args = []
+timeout = 300
+
+[mcp.cems.env]
+CEMS_API_URL = "..."
+CEMS_API_KEY = "..."
+```
+
+### 2. Check commands
+
+```bash
+ls ~/.codex/commands/
+```
+
+Expected:
+```
+recall.md
+remember.md
+foundation.md
+```
+
+### 3. Check skills
+
+```bash
+ls -R ~/.codex/skills/
+```
+
+Expected:
+```
+recall/SKILL.md
+remember/SKILL.md
+```
+
+### 4. Check credentials
+
+```bash
+cat ~/.cems/credentials
+```
+
+Should show:
+```
+CEMS_API_URL=https://your-server.com
+CEMS_API_KEY=cems_usr_...
+```
+
+### 5. Test MCP connection
+
+```bash
+cems-mcp
+```
+
+Should start the MCP server (stdio mode). Press Ctrl+C to exit.
+
+### 6. Test in Codex
+
+Start Codex and type:
+```
+/recall test
+```
+
+Codex should search CEMS and display results.
+
+## How It Works
+
+### User runs /recall command
+
+1. Codex parses arguments (query, --limit, --scope)
+2. Detects project from git remote
+3. Calls `memory_search` MCP tool with project parameter
+4. Displays results
+5. For truncated results, calls `memory_get` to fetch full content
+
+### User runs /remember command
+
+1. Codex parses arguments (content, --scope, --category, --tags)
+2. Detects project from git remote
+3. Calls `memory_add` MCP tool with source_ref="project:org/repo"
+4. Displays confirmation
+
+### User runs /foundation command
+
+1. Detects project from git remote
+2. Fetches foundation guidelines from API or MCP
+3. Displays formatted guidelines
+
+## MCP Tools
+
+CEMS exposes these MCP tools to Codex (same as Cursor):
+
+- `memory_search` - Search memories with semantic retrieval
+- `memory_add` - Store a memory (personal or shared scope)
+- `memory_get` - Fetch full memory by ID
+- `memory_forget` - Archive or delete a memory
+- `memory_update` - Update an existing memory
+- `memory_maintenance` - Run consolidation, summarization, or reindex jobs
+
+See [Cursor Integration](/integrations/cursor#mcp-tools) for full parameter documentation.
+
+## Troubleshooting
+
+### Commands not appearing
+
+1. Check files exist: `ls ~/.codex/commands/`
+2. Restart Codex
+3. Type `/` and look for `recall`, `remember`, `foundation`
+
+### MCP connection failed
+
+1. Check `cems-mcp` is installed: `which cems-mcp`
+2. Install if missing: `pip install cems` or `uv tool install cems`
+3. Test manually: `cems-mcp` (should start stdio server)
+4. Check credentials in `~/.codex/config.toml`
+
+### No search results
+
+1. Test CLI: `cems search "test query"`
+2. Check server connection: `cems health`
+3. Verify credentials: `cat ~/.cems/credentials`
+4. Check server logs if self-hosting
+
+### Skills not invoked
+
+1. Verify files exist: `ls ~/.codex/skills/*/SKILL.md`
+2. Try explicit invocation: "Use the recall skill to search for X"
+3. Restart Codex
+
+## Advanced Configuration
+
+### Custom MCP timeout
+
+Edit `~/.codex/config.toml`:
+```toml
+[mcp.cems]
+command = "cems-mcp"
+args = []
+timeout = 600  # 10 minutes for very large queries
+```
+
+### Self-hosted server
+
+Edit `~/.codex/config.toml`:
+```toml
+[mcp.cems.env]
+CEMS_API_URL = "https://your-server.com"
+CEMS_API_KEY = "cems_usr_..."
+```
+
+### Team memory
+
+Add team header (if supported by your server):
+```toml
+[mcp.cems.env]
+CEMS_API_URL = "https://your-server.com"
+CEMS_API_KEY = "cems_usr_..."
+CEMS_TEAM_ID = "your-team-name"
+```
+
+## Differences from Claude Code
+
+Codex has a lighter integration compared to Claude Code:
+
+| Feature | Claude Code | Codex |
+|---------|------------|--------|
+| Hooks | 6 (session start, prompt, pre/post tool use, stop, compact) | 0 |
+| Skills | 6 (recall, remember, share, forget, context, guide) | 2 (recall, remember) |
+| Commands | 2 (recall, remember) | 3 (recall, remember, foundation) |
+| Auto context injection | Yes (every prompt) | No (manual commands) |
+| Observer daemon | Yes | No |
+| Gate rules | Yes | No |
+
+**Why?** Codex focuses on explicit command-based workflows rather than automatic context injection.
+
+## Next Steps
+
+- [Claude Code Integration](/integrations/claude-code) - Full hook-based integration
+- [Cursor Integration](/integrations/cursor) - MCP + hooks + skills
+- [Goose Integration](/integrations/goose) - MCP-only extension

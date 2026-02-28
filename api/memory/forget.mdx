@@ -1,0 +1,160 @@
+---
+title: Forget memory
+description: Delete or archive a memory document
+---
+
+Delete or soft-delete (archive) a memory document. Soft-deleted memories are hidden from search but remain in the database for recovery.
+
+## Endpoint
+
+```
+POST /api/memory/forget
+```
+
+**Authentication**: Required (Bearer token)
+
+## Request body
+
+<ParamField path="memory_id" type="string" required>
+  The unique identifier of the memory to forget
+</ParamField>
+
+<ParamField path="hard_delete" type="boolean" default={false}>
+  Whether to permanently delete the memory.
+  
+  - `false` (default): Soft delete - marks as deleted but keeps in database
+  - `true`: Hard delete - permanently removes from database
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Whether the operation succeeded
+</ResponseField>
+
+<ResponseField name="document_id" type="string">
+  The ID of the forgotten memory
+</ResponseField>
+
+<ResponseField name="hard_deleted" type="boolean">
+  Whether the memory was permanently deleted
+</ResponseField>
+
+## Examples
+
+### Soft delete (default)
+
+```bash
+curl -X POST https://your-cems-server.com/api/memory/forget \
+  -H "Authorization: Bearer $CEMS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memory_id": "550e8400-e29b-41d4-a716-446655440000"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "document_id": "550e8400-e29b-41d4-a716-446655440000",
+  "hard_deleted": false
+}
+```
+
+The memory is marked as deleted (`is_deleted=true`) but remains in the database. It will not appear in search results.
+
+### Hard delete
+
+```bash
+curl -X POST https://your-cems-server.com/api/memory/forget \
+  -H "Authorization: Bearer $CEMS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+    "hard_delete": true
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "document_id": "550e8400-e29b-41d4-a716-446655440000",
+  "hard_deleted": true
+}
+```
+
+The memory and all its chunks are permanently deleted from the database.
+
+## Soft delete vs hard delete
+
+<CardGroup cols={2}>
+  <Card title="Soft delete" icon="archive">
+    - Sets `is_deleted=true` flag
+    - Keeps data in database
+    - Hidden from search
+    - Can be recovered
+    - Used by scheduled maintenance
+  </Card>
+  
+  <Card title="Hard delete" icon="trash">
+    - Removes from database
+    - Permanent and irreversible
+    - Frees up storage
+    - Cannot be recovered
+    - Use with caution
+  </Card>
+</CardGroup>
+
+## When to use each
+
+**Soft delete** (default) is recommended for:
+- Cleaning up outdated or incorrect memories
+- Removing temporary context
+- Letting scheduled maintenance handle final deletion
+- Keeping audit trail
+
+**Hard delete** is recommended for:
+- Removing sensitive information
+- Freeing up storage immediately
+- Cleaning up test data
+- When you're certain the memory won't be needed
+
+## Scheduled cleanup
+
+The [Re-indexing maintenance job](/advanced/maintenance#re-indexing) runs monthly and:
+1. Hard deletes all soft-deleted memories older than 30 days
+2. Archives stale memories (not accessed in 90 days)
+
+So soft-deleted memories are automatically cleaned up eventually.
+
+## Error responses
+
+<ResponseField name="error" type="string">
+  Error message if the request fails
+</ResponseField>
+
+**Status codes:**
+- `400` - Bad request (missing memory_id)
+- `401` - Unauthorized (invalid or missing API key)
+- `404` - Memory not found or access denied
+- `500` - Internal server error
+
+## CLI equivalent
+
+```bash
+# Soft delete
+cems delete <memory_id>
+
+# Hard delete
+cems delete <memory_id> --hard
+```
+
+## Related endpoints
+
+- [Get memory](/api/memory/get) - Verify memory before deleting
+- [List memories](/api/memory/list) - Find memories to delete
+- [Update memory](/api/memory/update) - Modify instead of deleting

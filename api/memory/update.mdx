@@ -1,0 +1,137 @@
+---
+title: Update memory
+description: Modify the content or metadata of an existing memory
+---
+
+Update the content, category, tags, or other metadata of an existing memory document.
+
+## Endpoint
+
+```
+POST /api/memory/update
+```
+
+**Authentication**: Required (Bearer token)
+
+## Request body
+
+<ParamField path="memory_id" type="string" required>
+  The unique identifier of the memory to update
+</ParamField>
+
+<ParamField path="content" type="string">
+  New memory content. If provided, the document is re-chunked and re-embedded.
+</ParamField>
+
+<ParamField path="category" type="string">
+  New category. One of: `preferences`, `decisions`, `patterns`, `context`, `learnings`, `general`, `gate-rules`, `guidelines`
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  New tags array. Replaces existing tags entirely.
+</ParamField>
+
+<ParamField path="source_ref" type="string">
+  New source reference
+</ParamField>
+
+<ParamField path="priority" type="number">
+  New priority value (affects scoring). Range: 0.1 to 2.0
+</ParamField>
+
+<ParamField path="is_pinned" type="boolean">
+  Whether to pin this memory (always included in search results)
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Whether the update succeeded
+</ResponseField>
+
+<ResponseField name="updated" type="boolean">
+  Whether any fields were actually changed
+</ResponseField>
+
+<ResponseField name="document_id" type="string">
+  The memory document ID
+</ResponseField>
+
+## Example
+
+### Update content
+
+```bash
+curl -X POST https://your-cems-server.com/api/memory/update \
+  -H "Authorization: Bearer $CEMS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+    "content": "I prefer using TypeScript with strict mode for all new backend services"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "updated": true,
+  "document_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### Update tags and priority
+
+```bash
+curl -X POST https://your-cems-server.com/api/memory/update \
+  -H "Authorization: Bearer $CEMS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+    "tags": ["typescript", "backend", "strict-mode"],
+    "priority": 1.5
+  }'
+```
+
+### Pin a memory
+
+```bash
+curl -X POST https://your-cems-server.com/api/memory/update \
+  -H "Authorization: Bearer $CEMS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "memory_id": "550e8400-e29b-41d4-a716-446655440000",
+    "is_pinned": true
+  }'
+```
+
+Pinned memories:
+- Always included in search results (even with low relevance scores)
+- Get a 1.1x score boost
+- Useful for critical guidelines or preferences
+
+## Behavior
+
+- **Content updates**: If you change `content`, the document is re-chunked and all embeddings are regenerated
+- **Metadata updates**: Changes to `category`, `tags`, `source_ref`, `priority`, or `is_pinned` are applied immediately without re-embedding
+- **Partial updates**: You only need to include fields you want to change
+- **Timestamp**: The `updated_at` timestamp is automatically updated
+
+## Error responses
+
+<ResponseField name="error" type="string">
+  Error message if the request fails
+</ResponseField>
+
+**Status codes:**
+- `400` - Bad request (missing memory_id or invalid parameters)
+- `401` - Unauthorized (invalid or missing API key)
+- `404` - Memory not found or access denied
+- `500` - Internal server error
+
+## Related endpoints
+
+- [Get memory](/api/memory/get) - Retrieve current memory state before updating
+- [Add memory](/api/memory/add) - Create a new memory
+- [Forget memory](/api/memory/forget) - Delete memory

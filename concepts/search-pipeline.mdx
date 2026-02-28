@@ -1,0 +1,551 @@
+---
+title: Search Pipeline
+description: Deep dive into CEMS's multi-stage retrieval pipeline
+---
+
+CEMS uses a sophisticated multi-stage retrieval pipeline to find the most relevant memories. The pipeline balances precision (finding exactly what's needed) with recall (not missing important context).
+
+## Pipeline Overview
+
+From `src/cems/retrieval.py:1-16`:
+
+```
+Query → Understanding → Synthesis → HyDE → Retrieval → RRF Fusion → Filtering → Scoring → Assembly → Results
+```
+
+### Pipeline Stages
+
+| Stage | LLM Calls | Purpose |
+|-------|-----------|----------|
+| **Query Understanding** | 1 | Route to optimal strategy (vector vs hybrid) |
+| **Query Synthesis** | 1 | Expand query into 2-5 search terms |
+| **HyDE** | 1 | Generate hypothetical ideal answer |
+| **Candidate Retrieval** | 0 | Fetch from pgvector (HNSW) + tsvector (BM25) |
+| **RRF Fusion** | 0 | Combine results from multiple retrievers |
+| **LLM Re-ranking** | 1 (optional) | Re-rank by actual relevance |
+| **Relevance Filtering** | 0 | Remove results below threshold |
+| **Score Adjustments** | 0 | Time decay, priority, project scoring |
+| **Token-Budgeted Assembly** | 0 | Select results within token budget |
+
+**Total LLM calls:** 3-4 (hybrid mode), 0 (vector mode)
+
+## Stage 1: Query Understanding
+
+**Purpose:** Analyze query intent to select the optimal retrieval strategy.
+
+### Implementation
+
+From `src/cems/retrieval.py:extract_query_intent()`:
+
+```python
+intent = {
+    "primary_intent": "troubleshooting|how-to|factual|recall|preference",
+    "complexity": "simple|moderate|complex",
+    "domains": ["domain1", "domain2"],
+    "entities": ["entity1", "entity2"],
+    "requires_reasoning": true|false
+}
+```
+
+### Routing Logic
+
+From `src/cems/retrieval.py:route_to_strategy()`:
+
+- **Vector mode** (fast, 0 LLM calls):
+  - Simple queries without reasoning requirements
+  - High-confidence single-domain queries
+  
+- **Hybrid mode** (thorough, 3-4 LLM calls):
+  - Complex queries requiring reasoning
+  - Multi-domain queries (2+ domains)
+  - Moderate/complex complexity
+
+## Stage 2: Query Synthesis
+
+**Purpose:** Expand the query into multiple search terms to improve recall.
+
+### Standard Expansion
+
+From `src/cems/retrieval.py:synthesize_query()`:
+
+```python
+# Original query
+"What's my database schema?"
+
+# Synthesized queries (2-3 terms)
+[
+    "database schema design",
+    "table structure columns",
+    "PostgreSQL schema"
+]
+```
+
+**Rules:**
+- Stay within the SAME specific domain/topic
+- No generalizing to broader categories
+- Prefer specific technical terms over generic words
+
+### Temporal Queries
+
+Detected by patterns like: "first", "last", "before", "after", "when"
+
+```python
+# Query
+"Which camping trip happened first?"
+
+# Temporal expansion (3-4 terms)
+[
+    "first camping trip date",
+    "earliest camping trip when",
+    "camping trip started began",
+    "camping trip timeline sequence"
+]
+```
+
+**Special handling:**
+- Focus on events, dates, sequences
+- Include date-related terms
+- Search for BOTH events in comparison queries
+
+### Preference Queries
+
+Detected by patterns like: "recommend", "suggest", "resources", "what should"
+
+```python
+# Query
+"Recommend video editing resources?"
+
+# Preference expansion (4-5 terms)
+[
+    "I use video editing software",
+    "my favorite video editor",
+    "video editing tools I prefer",
+    "I work with Adobe Premiere Pro",
+    "video editing workflow"
+]
+```
+
+**Semantic gap bridging:**
+- Question phrasing: "recommend video editing resources?"
+- Answer phrasing: "I use Adobe Premiere Pro"
+- Synthesis generates declarative user statements
+
+### RAP (Retrieval-Augmented Prompting)
+
+From `src/cems/retrieval.py:extract_profile_context()`:
+
+For preference queries, the system first performs a quick profile probe:
+
+1. Search existing memories for user preferences
+2. Extract 5 key phrases ("I use X", "I prefer Y")
+3. Include in synthesis prompt as dynamic examples
+4. LLM generates domain-specific expansions
+
+**Benefit:** Grounds synthesis in actual user preferences, not generic domains.
+
+## Stage 3: HyDE (Hypothetical Document Embeddings)
+
+**Purpose:** Generate what an ideal answer would look like, then search for documents similar to that answer.
+
+From `src/cems/retrieval.py:generate_hypothetical_memory()`:
+
+### Standard HyDE
+
+```python
+# Query
+"How do I deploy this app?"
+
+# Hypothetical memory
+"To deploy the app, I use Docker Compose to build the containers,
+then push to the production server via rsync. The deployment
+script is in scripts/deploy.sh and requires the PROD_KEY env var."
+```
+
+### Temporal HyDE
+
+```python
+# Query
+"When did I start using TypeScript?"
+
+# Hypothetical memory
+"On March 15th, 2024, I started using TypeScript for the backend API.
+This was 3 weeks after completing the frontend migration."
+```
+
+**Emphasis:** Specific dates, time references, sequence of events.
+
+### Preference HyDE
+
+```python
+# Query
+"What cocktails might I enjoy?"
+
+# Hypothetical memory (with profile context)
+"I really enjoy gin-based cocktails, especially with elderflower.
+My favorite is the Aviation cocktail. I prefer drinks that are
+not too sweet and have botanical or herbal notes."
+```
+
+**First-person voice:** Written as if the user said this previously.
+
+## Stage 4: Candidate Retrieval
+
+**Purpose:** Fetch candidates from PostgreSQL using vector and full-text search.
+
+### Vector Search (HNSW)
+
+From `src/cems/memory/search.py:_search_raw_async()`:
+
+```sql
+SELECT 
+    mc.document_id,
+    mc.content,
+    1 - (mc.embedding <=> $1) as score  -- cosine similarity
+FROM memory_chunks mc
+INNER JOIN memory_documents md ON mc.document_id = md.id
+WHERE 
+    md.user_id = $2 
+    AND md.archived = false
+ORDER BY mc.embedding <=> $1  -- HNSW index
+LIMIT $3;
+```
+
+**Index:** HNSW (Hierarchical Navigable Small World) for approximate nearest neighbor search
+
+**Dimensions:** 1536 (text-embedding-3-small via OpenRouter)
+
+### Full-Text Search (BM25)
+
+From `src/cems/memory/search.py:_search_lexical_raw_async()`:
+
+```sql
+SELECT 
+    mc.document_id,
+    mc.content,
+    ts_rank(mc.search_vector, query) as score
+FROM memory_chunks mc
+INNER JOIN memory_documents md ON mc.document_id = md.id,
+    to_tsquery($1) query
+WHERE 
+    md.user_id = $2
+    AND md.archived = false
+    AND mc.search_vector @@ query
+ORDER BY ts_rank(mc.search_vector, query) DESC
+LIMIT $3;
+```
+
+**Index:** GIN (Generalized Inverted Index) on tsvector for full-text search
+
+**Algorithm:** BM25 (Best Match 25) for lexical relevance
+
+### Hybrid Search
+
+Combines vector and BM25 results:
+
+```python
+# From src/cems/memory/search.py:hybrid_search_chunks()
+
+vector_results = vector_search(query_embedding)
+bm25_results = full_text_search(query)
+
+# Weight and combine (default: 70% vector, 30% BM25)
+for result in vector_results:
+    result.score *= 0.7
+for result in bm25_results:
+    result.score *= 0.3
+
+combined = vector_results + bm25_results
+```
+
+## Stage 5: RRF Fusion (Reciprocal Rank Fusion)
+
+**Purpose:** Combine results from multiple retrievers (original query, expansions, HyDE) into a single ranked list.
+
+From `src/cems/retrieval.py:reciprocal_rank_fusion()`:
+
+### RRF Formula
+
+```python
+# For each document appearing in multiple result lists:
+rrf_score = sum(weight_i / (k + rank_i) for each list i)
+
+# Where:
+# - weight_i = weight for result list i
+# - rank_i = position in list i (1-indexed)
+# - k = 60 (standard constant in literature)
+```
+
+### QMD Enhancements
+
+**List weights:**
+- Original query: **2.0x weight**
+- Query expansions: **1.0x weight**
+- HyDE: **1.0x weight**
+
+**Top-rank bonus** (per list, stacks if item appears in multiple lists):
+- Rank 1: **+0.05 bonus**
+- Ranks 2-3: **+0.02 bonus**
+
+**Example:**
+
+```python
+# Document appears in 3 lists:
+# - Original query: rank 1
+# - Expansion 1: rank 3
+# - HyDE: rank 2
+
+rrf_score = (
+    (2.0 / (60 + 1)) + 0.05 +  # Original, rank 1, bonus
+    (1.0 / (60 + 3)) + 0.02 +  # Expansion, rank 3, bonus
+    (1.0 / (60 + 2)) + 0.02    # HyDE, rank 2, bonus
+) = 0.0328 + 0.05 + 0.0164 + 0.02 + 0.0161 + 0.02
+  = 0.1553
+```
+
+### Score Normalization and Blending
+
+```python
+# Normalize RRF scores to 0-1 range
+min_rrf = min(rrf_scores.values())
+max_rrf = max(rrf_scores.values())
+norm_rrf = (rrf_score - min_rrf) / (max_rrf - min_rrf)
+
+# Blend with original vector score (50/50)
+final_score = 0.5 * norm_rrf + 0.5 * vector_score
+```
+
+## Stage 6: LLM Re-ranking (Optional)
+
+**Purpose:** Use LLM to re-rank candidates by actual relevance, catching semantic mismatches.
+
+From `src/cems/retrieval.py:rerank_with_llm()`:
+
+### When It Runs
+
+- Enabled in hybrid mode for complex queries
+- Optional (can be disabled for performance)
+- Operates on top 40 candidates (configurable)
+
+### Prompt
+
+```
+Given this search query, rank these memory candidates by ACTUAL RELEVANCE.
+
+Query: How do I connect datecs printer to Windows remotely?
+
+Candidates:
+1. [patterns] SSH to Hetzner server for deployment...
+2. [learnings] Fixed printer driver issue by installing datecs SDK...
+3. [context] Windows RDP allows remote printer access via redirection...
+
+Return a JSON array of indices in relevance order.
+Only include memories that are TRULY relevant.
+```
+
+### Output
+
+```json
+[2, 3]  // Indices 2 and 3 are relevant, 1 is not
+```
+
+### Score Blending
+
+```python
+# Assign new score based on LLM rank
+llm_score = 1.0 / (1 + rank)
+
+# Blend: 70% LLM rank, 30% original score
+final_score = 0.7 * llm_score + 0.3 * original_score
+```
+
+## Stage 7: Relevance Filtering
+
+**Purpose:** Remove results below a relevance threshold.
+
+```python
+# From src/cems/retrieval.py
+threshold = 0.3  # Configurable
+filtered = [r for r in results if r.score >= threshold]
+```
+
+## Stage 8: Score Adjustments
+
+**Purpose:** Apply metadata-based scoring adjustments.
+
+From `src/cems/retrieval.py:apply_score_adjustments()`:
+
+### Priority Boost
+
+```python
+score *= result.metadata.priority  # 1.0-2.0x
+```
+
+### Time Decay
+
+```python
+days_since_access = (now - result.metadata.last_accessed).days
+time_decay = 1.0 / (1.0 + (days_since_access / 60))  # 60-day half-life
+score *= time_decay
+```
+
+### Pinned Boost
+
+```python
+if result.metadata.pinned:
+    score *= 1.1  # 10% boost
+```
+
+### Project-Scoped Scoring
+
+```python
+if source_ref.startswith(f"project:{project}"):
+    score *= 1.3  # Same project: boost
+elif source_ref.startswith("project:"):
+    score *= 0.8  # Different project: penalty
+else:
+    score *= 0.9  # No project tag: mild penalty
+```
+
+## Stage 9: Token-Budgeted Assembly
+
+**Purpose:** Select results that fit within the token budget for context injection.
+
+### Standard Assembly
+
+From `src/cems/retrieval.py:assemble_context()`:
+
+```python
+max_tokens = 2000  # Default budget
+selected = []
+token_count = 0
+
+for result in sorted_results:
+    tokens = count_tokens(result.content)
+    if token_count + tokens <= max_tokens:
+        selected.append(result)
+        token_count += tokens
+
+return selected, token_count
+```
+
+**Greedy selection:** Takes results in score order until budget exhausted.
+
+### MMR Assembly (for Aggregation Queries)
+
+From `src/cems/retrieval.py:assemble_context_diverse()`:
+
+For queries requiring information from multiple sessions (e.g., "How many doctors did I visit?"):
+
+```python
+# Maximal Marginal Relevance
+mmr_score = λ * relevance - (1-λ) * max_similarity_to_selected
+
+# Where:
+# - λ = 0.6 (60% relevance, 40% diversity)
+# - relevance = normalized score
+# - max_similarity = Jaccard similarity to already-selected results
+```
+
+**Phase 1:** Take top result from each session using MMR
+
+**Phase 2:** Fill remaining budget with MMR selection across all candidates
+
+**Benefit:** Ensures diverse coverage across multiple sessions/events.
+
+## Search Modes
+
+CEMS supports three search modes:
+
+### Vector Mode
+
+```python
+memory.search(query, mode="vector")
+```
+
+- **LLM calls:** 0
+- **Strategy:** Vector search only (HNSW)
+- **Use case:** Fast, simple queries with high confidence
+- **Latency:** ~50ms
+
+### Hybrid Mode
+
+```python
+memory.search(query, mode="hybrid")
+```
+
+- **LLM calls:** 3-4
+- **Strategy:** Full pipeline (synthesis + HyDE + RRF + reranking)
+- **Use case:** Complex queries, preference queries, multi-domain
+- **Latency:** ~800ms
+
+### Auto Mode (Default)
+
+```python
+memory.search(query, mode="auto")
+```
+
+- **LLM calls:** 1 (for routing) + 0 or 3-4
+- **Strategy:** Query understanding routes to vector or hybrid
+- **Use case:** General-purpose (balances speed and accuracy)
+- **Latency:** ~100ms (vector) or ~900ms (hybrid)
+
+## Performance Optimizations
+
+### Lexical Signal Detection
+
+From `src/cems/retrieval.py:is_strong_lexical_signal()`:
+
+If BM25 returns a strong match with a large gap:
+
+```python
+if top_bm25_score >= 0.8 and (top_score - second_score) >= 0.3:
+    # Skip query synthesis, use BM25 results directly
+    return bm25_results
+```
+
+**Benefit:** Saves 1-2 LLM calls for exact keyword matches.
+
+### Batch Embedding
+
+From `src/cems/embedding.py:embed_batch()`:
+
+```python
+# Embed all query variants in a single API call
+queries = [original, *expansions, hyde]
+embeddings = await embedder.embed_batch(queries)
+```
+
+**Benefit:** Reduces API latency and cost.
+
+### Chunk-Level Deduplication
+
+From `src/cems/memory/search.py:_dedupe_by_document()`:
+
+```python
+# Keep only the best-scoring chunk per document
+seen_docs = {}
+for result in results:
+    if doc_id not in seen_docs or result.score > seen_docs[doc_id].score:
+        seen_docs[doc_id] = result
+```
+
+**Benefit:** Avoids redundant context from multiple chunks of the same document.
+
+## Configuration
+
+```python
+# Environment variables
+CEMS_SEARCH_MODE="auto"  # vector | hybrid | auto
+CEMS_SEARCH_LIMIT=5  # Max results to return
+CEMS_CONTEXT_BUDGET=2000  # Token budget for assembly
+CEMS_HYBRID_VECTOR_WEIGHT=0.7  # Vector weight in hybrid search
+CEMS_RRF_K=60  # RRF constant
+CEMS_RERANK_ENABLED=true  # Enable LLM re-ranking
+CEMS_RERANK_INPUT_LIMIT=40  # Max candidates to re-rank
+```
+
+## Related Concepts
+
+- [Memory Types](/concepts/memory-types) - How categories affect search
+- [How It Works](/concepts/how-it-works) - Integration with IDE hooks
+- [Architecture](/concepts/architecture) - Storage and indexing details

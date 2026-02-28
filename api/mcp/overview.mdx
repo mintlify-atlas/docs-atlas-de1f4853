@@ -1,0 +1,138 @@
+---
+title: MCP Overview
+description: Model Context Protocol integration for CEMS memory tools
+---
+
+CEMS provides a Model Context Protocol (MCP) server that exposes memory tools to AI coding assistants like Claude Code and Cursor.
+
+## Architecture
+
+CEMS supports two MCP transport modes:
+
+1. **stdio transport** - Direct command-line integration via `cems-mcp`
+2. **Streamable HTTP transport** - Express.js wrapper for HTTP-based MCP clients
+
+## stdio Transport
+
+The stdio transport is implemented in Python and reads credentials from `~/.cems/credentials` or environment variables.
+
+### Configuration
+
+Create `~/.cems/credentials`:
+
+```bash
+CEMS_API_URL=https://your-cems-server.com
+CEMS_API_KEY=cems_your_api_key_here
+```
+
+Or set environment variables:
+
+```bash
+export CEMS_API_URL="https://your-cems-server.com"
+export CEMS_API_KEY="cems_your_api_key_here"
+```
+
+### Entry Point
+
+The `cems-mcp` command starts the stdio server:
+
+```bash
+cems-mcp
+```
+
+This is typically configured in your MCP client's settings file.
+
+### User Profile as Instructions
+
+The stdio server fetches the user's memory profile on startup and injects it as server instructions:
+
+```python
+instructions = _fetch_profile() if API_URL and API_KEY else ""
+
+mcp = FastMCP(
+    "cems",
+    instructions=instructions or None,
+)
+```
+
+This provides the AI assistant with your personal context automatically.
+
+## HTTP Transport
+
+The HTTP transport is implemented in TypeScript using Express.js and the MCP SDK.
+
+### Stateless Mode
+
+The wrapper operates in stateless mode with JSON responses:
+
+```typescript
+const transport = new StreamableHTTPServerTransport({
+  sessionIdGenerator: undefined, // Stateless mode
+  enableJsonResponse: true, // JSON response, no SSE streaming
+});
+```
+
+### Authentication
+
+Auth headers are extracted from each request:
+
+```typescript
+const authHeaders = {
+  authorization: req.headers.authorization,
+  teamId: req.headers["x-team-id"],
+};
+```
+
+### Proxying to Python API
+
+All tool calls are proxied to the Python REST API:
+
+```typescript
+const response = await fetch(`${PYTHON_API_URL}/api/memory/search`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    ...(auth.authorization && { Authorization: auth.authorization }),
+    ...(auth.teamId && { "x-team-id": auth.teamId }),
+  },
+  body: JSON.stringify(args),
+});
+```
+
+## Available Tools
+
+Both transports expose the same set of memory tools:
+
+- `memory_search` - Search memories with unified retrieval pipeline
+- `memory_add` - Store new memories
+- `memory_get` - Retrieve full memory by ID
+- `memory_forget` - Delete or archive memories
+- `memory_update` - Update existing memories
+- `memory_maintenance` - Run maintenance jobs
+
+See [MCP Tools](/api/mcp/tools) for detailed documentation.
+
+## Resources
+
+Both transports expose memory resources:
+
+- `memory://status` - Current memory system status
+- `memory://personal/summary` - Personal memory summary
+- `memory://shared/summary` - Shared team memory summary
+
+## Health Checks
+
+The HTTP transport provides health endpoints:
+
+```bash
+GET /health    # Full health check including Python API
+GET /ping      # Lightweight heartbeat
+```
+
+## Method Restrictions
+
+The HTTP transport enforces stateless mode:
+
+- `POST /mcp` - Handle MCP requests
+- `GET /mcp` - Returns 405 (stateless mode, no SSE)
+- `DELETE /mcp` - Returns 405 (no session management)

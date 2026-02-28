@@ -1,0 +1,523 @@
+---
+title: Installation
+description: All installation methods and configuration options for CEMS
+---
+
+## Prerequisites
+
+Before installing CEMS, you need:
+
+<CardGroup cols={2}>
+  <Card title="CEMS Server" icon="server">
+    A CEMS server URL and API key from your admin.
+    
+    Don't have one? See [Server Deployment](/deployment/overview).
+  </Card>
+  <Card title="Python 3.11+" icon="python">
+    CEMS requires Python 3.11 or later.
+    
+    The installer will set up [uv](https://docs.astral.sh/uv/) automatically.
+  </Card>
+</CardGroup>
+
+## Installation Methods
+
+Choose the installation method that fits your workflow:
+
+<Tabs>
+  <Tab title="Interactive Install (Recommended)">
+    The interactive installer walks you through setup step-by-step:
+
+    ```bash
+    curl -fsSL https://getcems.com/install.sh | bash
+    ```
+
+    **What happens:**
+    1. Installs [uv](https://docs.astral.sh/uv/) if missing
+    2. Installs CEMS CLI tools via `uv tool install`
+    3. Prompts for API URL and key
+    4. Asks which IDEs to configure (Claude Code, Cursor, Codex, Goose, or all)
+    5. Deploys hooks, skills, and MCP configs
+    6. Saves credentials to `~/.cems/credentials` (chmod 600)
+    7. Saves IDE choices to `~/.cems/install.conf`
+
+    <Tip>
+      The installer is idempotent — safe to run multiple times.
+    </Tip>
+  </Tab>
+
+  <Tab title="Non-Interactive Install">
+    For automation, scripts, or CI/CD:
+
+    ```bash
+    CEMS_API_KEY=your-key-here \
+    CEMS_API_URL=https://cems.example.com \
+    CEMS_TOOL=claude \
+      curl -fsSL https://getcems.com/install.sh | bash
+    ```
+
+    **Environment Variables:**
+
+    | Variable | Required | Default | Description |
+    |----------|----------|---------|-------------|
+    | `CEMS_API_KEY` | Yes | — | Your CEMS API key |
+    | `CEMS_API_URL` | No | `https://cems.chocksy.com` | CEMS server URL |
+    | `CEMS_TOOL` | No | `claude` | IDE to configure: `claude`, `cursor`, `codex`, `goose`, or `all` |
+
+    <Note>
+      Non-interactive install skips IDE selection prompts — specify `CEMS_TOOL` to choose.
+    </Note>
+  </Tab>
+
+  <Tab title="Install from Source">
+    For development or custom modifications:
+
+    ```bash
+    git clone https://github.com/chocksy/cems.git
+    cd cems
+    ./install.sh
+    ```
+
+    This runs a development install:
+    1. Checks for `uv` (required)
+    2. Runs `uv tool install -e . --force` (editable mode)
+    3. Delegates to `cems setup` for configuration
+
+    <Tip>
+      Editable mode means your local changes take effect immediately.
+    </Tip>
+  </Tab>
+
+  <Tab title="Skills Only (Any Agent)">
+    If your agent supports [skills.sh](https://skills.sh), you can add CEMS skills without the full install:
+
+    ```bash
+    npx skills add Chocksy/cems
+    ```
+
+    **What you get:**
+    - `cems-recall` skill
+    - `cems-remember` skill
+    - `cems-foundation` skill
+
+    **What you still need:**
+    - CEMS server URL and API key
+    - Manual configuration (add credentials to `~/.cems/credentials`)
+
+    <Warning>
+      Skills-only install doesn't include hooks, observer daemon, or automatic memory injection.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## IDE Configuration
+
+CEMS can configure multiple IDEs. Here's what gets installed for each:
+
+### Claude Code
+
+<Accordion title="Full Integration: 6 hooks, 6 skills, 2 commands">
+  **Hooks** (`~/.claude/hooks/`):
+  - `cems_session_start.py` — Profile + context injection at session start
+  - `cems_user_prompts_submit.py` — Memory search + observations on every prompt
+  - `cems_post_tool_use.py` — Extract tool learning after tool execution
+  - `cems_pre_tool_use.py` — Gate rules enforcement before tool execution
+  - `cems_stop.py` — Session analysis + observer daemon start on session end
+  - `cems_pre_compact.py` — Context preservation before compaction
+
+  **Skills** (`~/.claude/skills/cems/`):
+  - `recall.md` — `/recall <query>` to search memories
+  - `remember.md` — `/remember <content>` to add personal memory
+  - `share.md` — `/share <content>` to add team memory
+  - `forget.md` — `/forget <id>` to delete memory
+  - `context.md` — `/context` to show memory system status
+  - `memory-guide.md` — Proactive memory usage guide
+
+  **Commands** (`~/.claude/commands/`):
+  - `recall.md` — `/recall` command variant
+  - `remember.md` — `/remember` command variant
+
+  **Settings** (`~/.claude/settings.json`):
+  - Hook configuration merged (not overwritten)
+</Accordion>
+
+### Cursor
+
+<Accordion title="MCP + Hooks: 3 hooks, 5 skills">
+  **Hooks** (`~/.cursor/hooks/`):
+  - `cems_session_start.py` — Profile injection
+  - `cems_agent_response.py` — Agent response hook
+  - `cems_stop.py` — Session end hook
+
+  **Skills** (`~/.cursor/skills/`):
+  - `cems-recall/SKILL.md` — Search memories
+  - `cems-remember/SKILL.md` — Add personal memory
+  - `cems-forget/SKILL.md` — Delete memory
+  - `cems-share/SKILL.md` — Add team memory
+  - `cems-context/SKILL.md` — Memory status
+
+  **MCP Config** (`~/.cursor/mcp.json`):
+  - CEMS MCP server config merged
+</Accordion>
+
+### Codex
+
+<Accordion title="MCP + Commands: 3 commands, 2 skills">
+  **Commands** (`~/.codex/commands/`):
+  - `recall.md` — Search memories
+  - `remember.md` — Add memory
+  - `foundation.md` — Foundation guidelines
+
+  **Skills** (`~/.codex/skills/`):
+  - `recall/SKILL.md` — Search memories
+  - `remember/SKILL.md` — Add memory
+
+  **MCP Config** (`~/.codex/config.toml`):
+  - CEMS MCP server config merged
+</Accordion>
+
+### Goose
+
+<Accordion title="MCP Extension">
+  **MCP Config** (`~/.config/goose/config.yaml`):
+  - CEMS MCP extension block merged
+
+  **MCP Tools Available:**
+  - `memory_add` — Store a memory
+  - `memory_search` — Search with full retrieval pipeline
+  - `memory_get` — Retrieve full document by ID
+  - `memory_forget` — Delete or archive a memory
+  - `memory_update` — Update memory content
+  - `memory_maintenance` — Trigger maintenance jobs
+</Accordion>
+
+## Credentials
+
+CEMS credentials are stored in `~/.cems/credentials` with chmod 600.
+
+**Credential Resolution Order:**
+1. CLI flags: `--api-url`, `--api-key`
+2. Environment variables: `CEMS_API_URL`, `CEMS_API_KEY`
+3. Credentials file: `~/.cems/credentials`
+
+**Credentials File Format:**
+```bash
+CEMS_API_URL=https://cems.example.com
+CEMS_API_KEY=cems_usr_abc123...
+CEMS_AUTO_UPDATE=1
+```
+
+**Manual Credential Setup:**
+
+```bash
+mkdir -p ~/.cems
+cat > ~/.cems/credentials <<EOF
+CEMS_API_URL=https://cems.example.com
+CEMS_API_KEY=cems_usr_abc123...
+EOF
+chmod 600 ~/.cems/credentials
+```
+
+## Verification
+
+After installation, verify everything works:
+
+<Steps>
+  <Step title="Check CLI installation">
+    ```bash
+    cems --version
+    ```
+
+    Expected output:
+    ```
+    cems version 0.7.1
+    ```
+  </Step>
+
+  <Step title="Test server connection">
+    ```bash
+    cems health
+    ```
+
+    Expected output:
+    ```
+    ✓ Connected to CEMS server
+    ✓ API key valid
+    ✓ User: yourname
+    ```
+  </Step>
+
+  <Step title="Verify hooks (Claude Code)">
+    ```bash
+    ls ~/.claude/hooks/cems_*.py
+    ```
+
+    Should list 6 hook files.
+  </Step>
+
+  <Step title="Verify skills">
+    <CodeGroup>
+    ```bash Claude Code
+    ls ~/.claude/skills/cems/
+    ```
+
+    ```bash Cursor
+    ls ~/.cursor/skills/cems-*/
+    ```
+
+    ```bash Codex
+    ls ~/.codex/skills/*/
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Test memory operations">
+    ```bash
+    cems add "Test memory"
+    cems search "test"
+    cems list
+    ```
+  </Step>
+</Steps>
+
+## Updating
+
+### Automatic Updates
+
+CEMS auto-updates when you start a new Claude Code session (if >24 hours old).
+
+The `SessionStart` hook checks for updates and runs `cems update` in the background.
+
+**Disable auto-update:**
+```bash
+export CEMS_AUTO_UPDATE=0
+# Or add to ~/.cems/credentials:
+echo "CEMS_AUTO_UPDATE=0" >> ~/.cems/credentials
+```
+
+### Manual Updates
+
+<CodeGroup>
+```bash Full Update
+# Pull latest package + re-deploy hooks/skills
+cems update
+```
+
+```bash Hooks Only
+# Re-deploy hooks only (skip package upgrade)
+cems update --hooks
+```
+</CodeGroup>
+
+**What `cems update` does:**
+1. Runs `uv tool upgrade cems` to pull latest version
+2. Re-deploys hooks, skills, and MCP configs to configured IDEs
+3. Uses IDE choices from `~/.cems/install.conf`
+
+## Reconfiguration
+
+To change settings or add/remove IDE integrations:
+
+```bash
+cems setup
+```
+
+This re-runs the full setup wizard:
+- Prompts for new credentials (or keeps existing)
+- Asks which IDEs to configure
+- Re-deploys hooks, skills, and configs
+- Updates `~/.cems/install.conf`
+
+## Uninstallation
+
+<Tabs>
+  <Tab title="Remove Hooks/Skills (Keep Credentials)">
+    ```bash
+    cems uninstall
+    ```
+
+    This removes:
+    - All hooks from `~/.claude/`, `~/.cursor/`, etc.
+    - All skills
+    - MCP config entries
+
+    This keeps:
+    - `~/.cems/credentials`
+    - `~/.cems/install.conf`
+    - CEMS CLI tools
+  </Tab>
+
+  <Tab title="Complete Removal">
+    ```bash
+    cems uninstall --all
+    ```
+
+    This removes everything:
+    - All hooks, skills, and configs
+    - `~/.cems/` directory
+    - CEMS CLI tools
+
+    To manually remove CLI tools:
+    ```bash
+    uv tool uninstall cems
+    ```
+  </Tab>
+</Tabs>
+
+## Advanced Configuration
+
+### Observer Daemon
+
+The observer daemon (`cems-observer`) runs in the background and watches session transcripts.
+
+**Check if running:**
+```bash
+ps aux | grep cems-observer
+```
+
+**Manual start:**
+```bash
+cems-observer &
+```
+
+**Configuration:**
+The observer daemon reads from `~/.cems/credentials` and watches:
+- `~/.claude/projects/*/` for JSONL transcript files
+- Polls every 30 seconds
+- Sends 50KB chunks to server when accumulated
+
+### Custom Hook Configuration
+
+If you need to customize hook behavior, edit the hook files directly:
+
+<CodeGroup>
+```python ~/.claude/hooks/cems_session_start.py
+# Add custom logic before profile injection
+import sys
+import json
+
+# Your custom code here
+
+# Then run the standard CEMS logic
+# ...
+```
+</CodeGroup>
+
+<Warning>
+  Custom hook modifications will be overwritten by `cems update`. Make backups.
+</Warning>
+
+### Environment Variables
+
+CEMS respects these environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CEMS_API_URL` | `https://cems.chocksy.com` | CEMS server URL |
+| `CEMS_API_KEY` | — | Your API key |
+| `CEMS_AUTO_UPDATE` | `1` | Enable auto-updates (0=disable) |
+| `CEMS_LOG_LEVEL` | `INFO` | Logging level |
+| `CEMS_OBSERVER_POLL_INTERVAL` | `30` | Observer poll interval (seconds) |
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="uv not found after install">
+    The installer installs uv to `~/.local/bin/`. Add to PATH:
+
+    ```bash
+    export PATH="$HOME/.local/bin:$PATH"
+    ```
+
+    Add to your shell profile:
+    ```bash
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+    source ~/.zshrc
+    ```
+  </Accordion>
+
+  <Accordion title="cems command not found">
+    uv tool installs to `~/.local/bin/`. Ensure it's on PATH:
+
+    ```bash
+    export PATH="$HOME/.local/bin:$PATH"
+    ```
+
+    Verify:
+    ```bash
+    which cems
+    ls -la ~/.local/bin/cems
+    ```
+  </Accordion>
+
+  <Accordion title="Hooks not executing">
+    1. Verify hooks exist:
+       ```bash
+       ls -la ~/.claude/hooks/cems_*.py
+       ```
+
+    2. Test hook manually:
+       ```bash
+       echo '{"prompt": "test"}' | uv run ~/.claude/hooks/cems_user_prompts_submit.py
+       ```
+
+    3. Check settings.json:
+       ```bash
+       cat ~/.claude/settings.json
+       ```
+
+    4. Re-run setup:
+       ```bash
+       cems setup
+       ```
+  </Accordion>
+
+  <Accordion title="Skills not appearing in IDE">
+    1. Verify skill files exist:
+       ```bash
+       ls -la ~/.claude/skills/cems/
+       ```
+
+    2. Restart IDE completely
+
+    3. Check IDE skill directory (may vary):
+       - Claude Code: `~/.claude/skills/`
+       - Cursor: `~/.cursor/skills/`
+       - Codex: `~/.codex/skills/`
+
+    4. Re-run setup:
+       ```bash
+       cems setup
+       ```
+  </Accordion>
+
+  <Accordion title="Permission denied errors">
+    The credentials file requires chmod 600:
+
+    ```bash
+    chmod 600 ~/.cems/credentials
+    ```
+
+    If hooks can't execute:
+    ```bash
+    chmod +x ~/.claude/hooks/cems_*.py
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Learn how to use CEMS in your daily workflow
+  </Card>
+  <Card title="Server Deployment" icon="server" href="/deployment/overview">
+    Set up CEMS server for your team
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore the full API and CLI
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/concepts/architecture">
+    Understand how CEMS works under the hood
+  </Card>
+</CardGroup>

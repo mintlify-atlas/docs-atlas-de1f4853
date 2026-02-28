@@ -1,0 +1,314 @@
+---
+title: Memory Types
+description: Understanding memory categories, scopes, and metadata in CEMS
+---
+
+CEMS organizes memories using categories, scopes, and metadata to enable precise retrieval and organization.
+
+## Memory Categories
+
+Categories classify memories by their semantic purpose. Defined in `src/cems/models.py:MemoryCategory`:
+
+### Core Categories
+
+<AccordionGroup>
+  <Accordion title="preferences" icon="heart">
+    User preferences about tools, languages, coding styles, and workflows.
+    
+    **Examples:**
+    - "I prefer Python for backend development"
+    - "Use snake_case for database column names"
+    - "I work with VS Code and Claude Code"
+    
+    **Storage:** Explicit via `/remember` or inferred from session patterns
+  </Accordion>
+
+  <Accordion title="decisions" icon="check-circle">
+    Architecture decisions, technical choices, and their rationale.
+    
+    **Examples:**
+    - "Chose PostgreSQL over MySQL for better JSON support"
+    - "Using React instead of Vue for team familiarity"
+    - "Adopted pgvector for semantic search capabilities"
+    
+    **Storage:** Session learning extraction
+  </Accordion>
+
+  <Accordion title="patterns" icon="repeat">
+    Recurring patterns in code, tools, workflows, and problem-solving approaches.
+    
+    **Examples:**
+    - "User always wraps async calls with try/catch"
+    - "Prefers integration tests over unit tests"
+    - "Uses Docker Compose for local development"
+    
+    **Storage:** Tool learning hook (`cems_post_tool_use.py`) and observer daemon
+  </Accordion>
+
+  <Accordion title="context" icon="sitemap">
+    Project context, infrastructure, and high-level observations.
+    
+    **Examples:**
+    - "Project uses PostgreSQL + pgvector for vector storage"
+    - "Deploys to production via Coolify"
+    - "Monorepo structure with shared packages"
+    
+    **Storage:** Observer daemon (`cems-observer`)
+  </Accordion>
+
+  <Accordion title="learnings" icon="graduation-cap">
+    Session-specific learnings, solutions to problems, and discoveries.
+    
+    **Examples:**
+    - "Fixed CORS issue by adding credentials: 'include'"
+    - "Memory consolidation improves recall by 15%"
+    - "HyDE technique bridges semantic gap in preference queries"
+    
+    **Storage:** Session end hook (`cems_stop.py`)
+  </Accordion>
+
+  <Accordion title="general" icon="file">
+    Uncategorized memories and general information.
+    
+    **Examples:**
+    - Generic notes
+    - Temporary information
+    - Unclassified content
+    
+    **Storage:** Default category when none specified
+  </Accordion>
+
+  <Accordion title="gate-rules" icon="shield">
+    Tool-blocking rules enforced by PreToolUse hooks.
+    
+    **Examples:**
+    - "Never run 'rm -rf /' commands"
+    - "Require confirmation before git push --force"
+    - "Block file deletions in production branches"
+    
+    **Storage:** Explicit via `cems rule add` command
+  </Accordion>
+</AccordionGroup>
+
+## Memory Scope
+
+Scope determines visibility and sharing. Defined in `src/cems/models.py:MemoryScope`:
+
+### Personal Scope
+
+```python
+scope: MemoryScope.PERSONAL
+```
+
+- **Visibility:** User-private, not shared with team
+- **Use cases:**
+  - Individual preferences
+  - Personal workflow patterns
+  - Private notes and reminders
+- **Storage:** Isolated by `user_id` in database
+- **Commands:** `/remember` (default scope)
+
+### Shared Scope
+
+```python
+scope: MemoryScope.SHARED
+```
+
+- **Visibility:** Shared across team members
+- **Use cases:**
+  - Team conventions and standards
+  - Shared architecture decisions
+  - Codebase-specific patterns
+- **Storage:** Isolated by `team_id` in database
+- **Commands:** `/share` in Claude Code
+
+### Scope Selection in Search
+
+Search can target specific scopes:
+
+```python
+# Personal only
+memory.search(query, scope="personal")
+
+# Shared only (team memories)
+memory.search(query, scope="shared")
+
+# Both personal and shared (default)
+memory.search(query, scope="both")
+```
+
+## Memory Metadata
+
+Each memory includes rich metadata for tracking and scoring. Defined in `src/cems/models.py:MemoryMetadata`:
+
+### Core Fields
+
+| Field | Type | Purpose |
+|-------|------|----------|
+| `memory_id` | UUID | Unique identifier for the memory |
+| `user_id` | string | Owner of the memory |
+| `team_id` | string \| null | Team association for shared memories |
+| `scope` | enum | Personal or shared visibility |
+| `category` | string | Memory category (see above) |
+| `tags` | string[] | User-defined tags for organization |
+
+### Timestamps
+
+| Field | Type | Purpose |
+|-------|------|----------|
+| `created_at` | datetime | When the memory was first stored |
+| `updated_at` | datetime | Last modification time |
+| `last_accessed` | datetime | Last time memory was retrieved |
+| `expires_at` | datetime \| null | Expiration time (null = never expires) |
+
+### Access Tracking
+
+| Field | Type | Purpose |
+|-------|------|----------|
+| `access_count` | int | Number of times memory was retrieved |
+| `priority` | float | Priority weight for retrieval (1.0 default, up to 2.0) |
+
+**Priority boost:** Frequently accessed memories get higher priority:
+- Each access increments `access_count`
+- Priority increases: `priority = 1.0 + min(access_count * 0.05, 1.0)`
+- Maximum priority: 2.0 (accessed 20+ times)
+
+### Source Tracking
+
+| Field | Type | Purpose |
+|-------|------|----------|
+| `source` | string \| null | Origin of the memory (e.g., "session", "observer", "manual") |
+| `source_ref` | string \| null | Project/file reference (e.g., `"project:myapp"`, `"repo:src/api.py:42"`) |
+
+**Project-scoped recall:** Memories with `source_ref` get scoring adjustments:
+- Same project: **1.3x boost** (from `src/cems/retrieval.py:620`)
+- Different project: **0.8x penalty**
+- No project tag: **0.9x mild penalty**
+
+### Pinning
+
+| Field | Type | Purpose |
+|-------|------|----------|
+| `pinned` | bool | Whether memory is pinned (protected from decay) |
+| `pin_reason` | string \| null | Reason for pinning |
+| `pin_category` | enum \| null | Pin category (see below) |
+
+**Pinned memories:**
+- **Never auto-pruned** by maintenance jobs
+- Get **1.1x score boost** during retrieval (from `src/cems/retrieval.py:613`)
+- Exempt from time decay penalties
+
+### Pin Categories
+
+Defined in `src/cems/models.py:PinCategory`:
+
+- `guideline` - Coding guidelines, style guides
+- `convention` - Team conventions
+- `architecture` - Architecture decisions
+- `standard` - Industry standards
+- `documentation` - Important documentation
+
+### Archival
+
+| Field | Type | Purpose |
+|-------|------|----------|
+| `archived` | bool | Whether memory is archived (soft-delete) |
+
+**Archived memories:**
+- Excluded from search by default
+- Can be restored if needed
+- Eventually pruned by re-indexing job
+
+## Memory Storage Model
+
+CEMS uses a document + chunk model for storage:
+
+### Document Level
+
+Stored in `memory_documents` table:
+
+```sql
+CREATE TABLE memory_documents (
+    id UUID PRIMARY KEY,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,  -- For deduplication
+    user_id TEXT NOT NULL,
+    team_id TEXT,
+    scope TEXT NOT NULL,
+    category TEXT DEFAULT 'general',
+    title TEXT,
+    source TEXT,
+    source_ref TEXT,
+    tags TEXT[],
+    archived BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+### Chunk Level
+
+Stored in `memory_chunks` table:
+
+```sql
+CREATE TABLE memory_chunks (
+    id UUID PRIMARY KEY,
+    document_id UUID REFERENCES memory_documents(id),
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    embedding vector(1536),  -- pgvector type
+    search_vector tsvector,  -- Full-text search
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_chunks_embedding ON memory_chunks 
+    USING hnsw (embedding vector_cosine_ops);  -- Vector search
+
+CREATE INDEX idx_chunks_fts ON memory_chunks 
+    USING gin (search_vector);  -- Full-text search
+```
+
+**Why chunks?**
+- Handles long documents without truncation
+- Better recall (matches at snippet level)
+- Efficient embedding reuse
+- Deduplication by content hash
+
+**Chunking parameters** (from `src/cems/chunking.py`):
+- Chunk size: 800 tokens
+- Overlap: 15% (120 tokens)
+- Short content (< 800 tokens): stored as single chunk
+
+## Score Adjustments
+
+During retrieval, memories receive score adjustments based on metadata:
+
+```python
+# From src/cems/retrieval.py:apply_score_adjustments()
+
+# 1. Priority boost (1.0-2.0x)
+score *= result.metadata.priority
+
+# 2. Time decay (60-day half-life)
+days_since_access = (now - result.metadata.last_accessed).days
+time_decay = 1.0 / (1.0 + (days_since_access / 60))
+score *= time_decay
+
+# 3. Pinned boost (10%)
+if result.metadata.pinned:
+    score *= 1.1
+
+# 4. Project-scoped boost/penalty
+if source_ref.startswith(f"project:{project}"):
+    score *= 1.3  # Same project
+elif source_ref.startswith("project:"):
+    score *= 0.8  # Different project
+else:
+    score *= 0.9  # No project tag
+```
+
+## Related Concepts
+
+- [How It Works](/concepts/how-it-works) - Memory lifecycle and integration
+- [Search Pipeline](/concepts/search-pipeline) - How metadata affects retrieval
+- [Architecture](/concepts/architecture) - Storage schema and indexing

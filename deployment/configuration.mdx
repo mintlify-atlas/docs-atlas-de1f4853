@@ -1,0 +1,385 @@
+---
+title: Configuration
+description: Environment variables and settings for CEMS server deployment
+---
+
+## Environment Variables
+
+CEMS server is configured via environment variables. These are typically set in a `.env` file or passed directly to Docker Compose.
+
+## Required Variables
+
+### OPENROUTER_API_KEY
+
+<ParamField path="OPENROUTER_API_KEY" type="string" required>
+  OpenRouter API key for LLM and embedding operations.
+
+  Get your key at: [openrouter.ai/keys](https://openrouter.ai/keys)
+
+  **Used for:**
+  - Embeddings (`openai/text-embedding-3-small`)
+  - LLM operations (query synthesis, HyDE, maintenance)
+  - All AI functionality
+
+  ```bash
+  OPENROUTER_API_KEY=sk-or-v1-...
+  ```
+</ParamField>
+
+### CEMS_ADMIN_KEY
+
+<ParamField path="CEMS_ADMIN_KEY" type="string" required>
+  Admin API key for user and team management.
+
+  Generate with:
+  ```bash
+  openssl rand -hex 32
+  ```
+
+  **Used for:**
+  - Creating users (`POST /admin/users`)
+  - Resetting API keys (`POST /admin/users/{id}/reset-key`)
+  - Managing teams (`POST /admin/teams`)
+  - All `/admin/*` endpoints
+
+  ```bash
+  CEMS_ADMIN_KEY=a1b2c3d4e5f6...
+  ```
+
+  <Warning>
+    Keep this secret! Anyone with the admin key can create/delete users and access all data.
+  </Warning>
+</ParamField>
+
+## Database Configuration
+
+### CEMS_DATABASE_URL
+
+<ParamField path="CEMS_DATABASE_URL" type="string" default="auto-configured in docker-compose">
+  PostgreSQL connection URL.
+
+  **Format:**
+  ```
+  postgresql://username:password@host:port/database
+  ```
+
+  **Docker Compose default:**
+  ```bash
+  CEMS_DATABASE_URL=postgresql://cems:${POSTGRES_PASSWORD}@postgres:5432/cems
+  ```
+
+  <Note>
+    In Docker Compose, this is automatically set to use the `postgres` service.
+  </Note>
+</ParamField>
+
+### POSTGRES_PASSWORD
+
+<ParamField path="POSTGRES_PASSWORD" type="string" default="cems_secure_password">
+  PostgreSQL database password.
+
+  **Change this in production!**
+
+  ```bash
+  POSTGRES_PASSWORD=your_secure_password_here
+  ```
+</ParamField>
+
+## Server Configuration
+
+### CEMS_MODE
+
+<ParamField path="CEMS_MODE" type="string" default="server">
+  Operating mode for CEMS.
+
+  **Options:**
+  - `server` - Multi-user server mode (Docker deployment)
+  - `client` - Client mode (connects to remote server)
+
+  **Docker Compose sets:**
+  ```bash
+  CEMS_MODE=server
+  ```
+</ParamField>
+
+### CEMS_SERVER_HOST
+
+<ParamField path="CEMS_SERVER_HOST" type="string" default="0.0.0.0">
+  Host to bind the server to.
+
+  - `0.0.0.0` - Listen on all interfaces (Docker default)
+  - `127.0.0.1` - Localhost only
+
+  ```bash
+  CEMS_SERVER_HOST=0.0.0.0
+  ```
+</ParamField>
+
+### CEMS_SERVER_PORT
+
+<ParamField path="CEMS_SERVER_PORT" type="number" default="8765">
+  Port for the REST API server.
+
+  ```bash
+  CEMS_SERVER_PORT=8765
+  ```
+</ParamField>
+
+## Embedding Configuration
+
+### CEMS_EMBEDDING_BACKEND
+
+<ParamField path="CEMS_EMBEDDING_BACKEND" type="string" default="openrouter">
+  Embedding provider backend.
+
+  **Options:**
+  - `openrouter` - OpenRouter API (1536-dim, default)
+  - `llamacpp_server` - Local llama.cpp server (768-dim)
+
+  **Recommended:** Use `openrouter` for best performance.
+
+  ```bash
+  CEMS_EMBEDDING_BACKEND=openrouter
+  ```
+</ParamField>
+
+### CEMS_EMBEDDING_DIMENSION
+
+<ParamField path="CEMS_EMBEDDING_DIMENSION" type="number" default="1536">
+  Embedding vector dimension.
+
+  **Must match your backend:**
+  - `1536` - OpenRouter (`openai/text-embedding-3-small`)
+  - `768` - llama.cpp (`embeddinggemma-300M-Q8_0.gguf`)
+
+  ```bash
+  CEMS_EMBEDDING_DIMENSION=1536
+  ```
+
+  <Warning>
+    Changing this after deployment requires rebuilding all embeddings.
+  </Warning>
+</ParamField>
+
+### CEMS_EMBEDDING_MODEL
+
+<ParamField path="CEMS_EMBEDDING_MODEL" type="string" default="openai/text-embedding-3-small">
+  Embedding model (OpenRouter format: `provider/model`).
+
+  **Default:**
+  ```bash
+  CEMS_EMBEDDING_MODEL=openai/text-embedding-3-small
+  ```
+
+  **Other options:**
+  - `openai/text-embedding-3-large` (3072-dim, higher quality)
+  - `text-embedding-3-small` (if using OpenAI directly)
+</ParamField>
+
+## LLM Configuration
+
+### CEMS_LLM_MODEL
+
+<ParamField path="CEMS_LLM_MODEL" type="string" default="openai/gpt-4o-mini">
+  LLM model for maintenance operations and query synthesis.
+
+  **Default:**
+  ```bash
+  CEMS_LLM_MODEL=openai/gpt-4o-mini
+  ```
+
+  **Other options:**
+  - `openai/gpt-4o` (higher quality, slower)
+  - `anthropic/claude-3.5-sonnet` (Anthropic via OpenRouter)
+  - `x-ai/grok-4.1-fast` (fast alternative)
+</ParamField>
+
+## Retrieval Configuration
+
+### CEMS_RERANKER_BACKEND
+
+<ParamField path="CEMS_RERANKER_BACKEND" type="string" default="disabled">
+  Reranker backend for search result refinement.
+
+  **Options:**
+  - `disabled` - No reranking (default, best performance)
+  - `llm` - OpenRouter LLM reranker
+  - `llamacpp_server` - Local llama.cpp reranker
+
+  <Warning>
+    Rerankers significantly hurt performance in testing:
+    - LLM reranker: 88% → 81% (-7%)
+    - llamacpp_server: 86% → 28% (-58%)
+
+    **Recommendation:** Keep disabled.
+  </Warning>
+
+  ```bash
+  CEMS_RERANKER_BACKEND=disabled
+  ```
+</ParamField>
+
+## Advanced Settings
+
+These settings have sensible defaults and typically don't need to be changed.
+
+### Debug Mode
+
+<ParamField path="CEMS_DEBUG_MODE" type="boolean" default="true">
+  Enable debug mode (exceptions bubble up instead of silent fallbacks).
+
+  ```bash
+  CEMS_DEBUG_MODE=true  # Development
+  CEMS_DEBUG_MODE=false # Production
+  ```
+</ParamField>
+
+### Retrieval Settings
+
+<ParamField path="CEMS_RELEVANCE_THRESHOLD" type="number" default="0.4">
+  Minimum similarity score to include in results.
+
+  ```bash
+  CEMS_RELEVANCE_THRESHOLD=0.4
+  ```
+</ParamField>
+
+<ParamField path="CEMS_DEFAULT_MAX_TOKENS" type="number" default="4000">
+  Default token budget for retrieval results.
+
+  ```bash
+  CEMS_DEFAULT_MAX_TOKENS=4000
+  ```
+</ParamField>
+
+<ParamField path="CEMS_MAX_CANDIDATES_PER_QUERY" type="number" default="150">
+  Max candidates per vector search query.
+
+  ```bash
+  CEMS_MAX_CANDIDATES_PER_QUERY=150
+  ```
+</ParamField>
+
+### Scheduler Settings
+
+<ParamField path="CEMS_ENABLE_SCHEDULER" type="boolean" default="true">
+  Enable background maintenance jobs.
+
+  ```bash
+  CEMS_ENABLE_SCHEDULER=true
+  ```
+</ParamField>
+
+<ParamField path="CEMS_NIGHTLY_HOUR" type="number" default="3">
+  Hour for nightly consolidation (0-23, UTC).
+
+  ```bash
+  CEMS_NIGHTLY_HOUR=3
+  ```
+</ParamField>
+
+<ParamField path="CEMS_WEEKLY_DAY" type="string" default="sun">
+  Day for weekly summarization.
+
+  ```bash
+  CEMS_WEEKLY_DAY=sun
+  ```
+</ParamField>
+
+### Decay Settings
+
+<ParamField path="CEMS_STALE_DAYS" type="number" default="90">
+  Days before memory is considered stale.
+
+  ```bash
+  CEMS_STALE_DAYS=90
+  ```
+</ParamField>
+
+<ParamField path="CEMS_ARCHIVE_DAYS" type="number" default="180">
+  Days before memory is archived.
+
+  ```bash
+  CEMS_ARCHIVE_DAYS=180
+  ```
+</ParamField>
+
+<ParamField path="CEMS_DUPLICATE_SIMILARITY_THRESHOLD" type="number" default="0.92">
+  Cosine similarity threshold for duplicate detection.
+
+  ```bash
+  CEMS_DUPLICATE_SIMILARITY_THRESHOLD=0.92
+  ```
+</ParamField>
+
+## Example .env File
+
+Here's a complete example for production:
+
+```bash
+# Required
+OPENROUTER_API_KEY=sk-or-v1-...
+CEMS_ADMIN_KEY=a1b2c3d4e5f6...
+
+# Database
+POSTGRES_PASSWORD=your_secure_password_here
+
+# Server
+CEMS_MODE=server
+CEMS_SERVER_HOST=0.0.0.0
+CEMS_SERVER_PORT=8765
+
+# Embeddings (defaults are fine)
+CEMS_EMBEDDING_BACKEND=openrouter
+CEMS_EMBEDDING_DIMENSION=1536
+CEMS_EMBEDDING_MODEL=openai/text-embedding-3-small
+
+# LLM
+CEMS_LLM_MODEL=openai/gpt-4o-mini
+
+# Retrieval
+CEMS_RERANKER_BACKEND=disabled
+
+# Optional: Adjust for your timezone
+CEMS_NIGHTLY_HOUR=3  # 3 AM UTC
+```
+
+## Verifying Configuration
+
+Use the admin debug endpoint to verify your configuration:
+
+```bash
+source .env
+curl -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+  http://localhost:8765/admin/debug
+```
+
+Response:
+```json
+{
+  "config": {
+    "OPENROUTER_API_KEY": "set",
+    "CEMS_EMBEDDING_MODEL": "openai/text-embedding-3-small (default)",
+    "CEMS_LLM_MODEL": "openai/gpt-4o-mini (default)",
+    "VECTOR_STORE": "pgvector (unified PostgreSQL)"
+  }
+}
+```
+
+## Testing LLM Connectivity
+
+Test your OpenRouter API key:
+
+```bash
+source .env
+curl -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+  http://localhost:8765/admin/debug/llm
+```
+
+This tests both LLM and embedding endpoints.
+
+## Next Steps
+
+<Card title="User Management" icon="users" href="/deployment/user-management">
+  Create users and distribute API keys
+</Card>

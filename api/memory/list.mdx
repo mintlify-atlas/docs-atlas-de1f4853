@@ -1,0 +1,199 @@
+---
+title: List memories
+description: List all memories with optional filtering
+---
+
+List all memory documents with optional filtering by category, scope, or project.
+
+## Endpoint
+
+```
+GET /api/memory/list
+```
+
+**Authentication**: Required (Bearer token)
+
+## Query parameters
+
+<ParamField query="category" type="string">
+  Filter by category. One of: `preferences`, `decisions`, `patterns`, `context`, `learnings`, `general`, `gate-rules`, `guidelines`
+</ParamField>
+
+<ParamField query="scope" type="string" default="both">
+  Filter by scope:
+  - `personal` - Only personal memories
+  - `shared` - Only team-shared memories
+  - `both` - Both scopes (default)
+</ParamField>
+
+<ParamField query="project" type="string">
+  Filter by project. Format: `org/repo`
+  
+  Returns memories with `source_ref` matching `project:org/repo`
+</ParamField>
+
+<ParamField query="limit" type="integer" default={100}>
+  Maximum number of results to return
+</ParamField>
+
+<ParamField query="offset" type="integer" default={0}>
+  Number of results to skip (for pagination)
+</ParamField>
+
+<ParamField query="include_deleted" type="boolean" default={false}>
+  Whether to include soft-deleted memories
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Whether the operation succeeded
+</ResponseField>
+
+<ResponseField name="documents" type="object[]">
+  Array of memory documents
+  
+  <Expandable title="properties">
+    <ResponseField name="id" type="string">
+      Unique identifier
+    </ResponseField>
+    
+    <ResponseField name="content" type="string">
+      Memory content (may be truncated for long documents)
+    </ResponseField>
+    
+    <ResponseField name="category" type="string">
+      Memory category
+    </ResponseField>
+    
+    <ResponseField name="scope" type="string">
+      Memory scope (personal or shared)
+    </ResponseField>
+    
+    <ResponseField name="source_ref" type="string">
+      Source reference
+    </ResponseField>
+    
+    <ResponseField name="tags" type="string[]">
+      Associated tags
+    </ResponseField>
+    
+    <ResponseField name="created_at" type="string">
+      Creation timestamp (ISO 8601)
+    </ResponseField>
+    
+    <ResponseField name="is_pinned" type="boolean">
+      Whether pinned
+    </ResponseField>
+    
+    <ResponseField name="is_deleted" type="boolean">
+      Whether soft-deleted
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="count" type="integer">
+  Number of documents returned
+</ResponseField>
+
+<ResponseField name="total" type="integer">
+  Total number of matching documents (for pagination)
+</ResponseField>
+
+## Examples
+
+### List all memories
+
+```bash
+curl -X GET "https://your-cems-server.com/api/memory/list" \
+  -H "Authorization: Bearer $CEMS_API_KEY"
+```
+
+### Filter by category
+
+```bash
+curl -X GET "https://your-cems-server.com/api/memory/list?category=preferences&limit=50" \
+  -H "Authorization: Bearer $CEMS_API_KEY"
+```
+
+### Filter by project
+
+```bash
+curl -X GET "https://your-cems-server.com/api/memory/list?project=acme/api-server" \
+  -H "Authorization: Bearer $CEMS_API_KEY"
+```
+
+### Pagination
+
+```bash
+# First page
+curl -X GET "https://your-cems-server.com/api/memory/list?limit=50&offset=0" \
+  -H "Authorization: Bearer $CEMS_API_KEY"
+
+# Second page
+curl -X GET "https://your-cems-server.com/api/memory/list?limit=50&offset=50" \
+  -H "Authorization: Bearer $CEMS_API_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "documents": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "content": "I prefer using TypeScript for all new backend services",
+      "category": "preferences",
+      "scope": "personal",
+      "source_ref": null,
+      "tags": ["typescript", "backend"],
+      "created_at": "2024-02-28T10:30:00Z",
+      "is_pinned": false,
+      "is_deleted": false
+    }
+  ],
+  "count": 1,
+  "total": 42
+}
+```
+
+## Use cases
+
+- **Memory audit**: Review all stored memories
+- **Batch operations**: Find memories to update or delete
+- **Export**: Export all memories for backup
+- **Category management**: See what's in each category
+- **Project context**: List all memories for a specific project
+
+## Performance
+
+- The query uses database indexes for efficient filtering
+- Content is truncated to 500 characters in list view
+- Use pagination for large result sets
+- For searching by content, use [Search memories](/api/memory/search) instead
+
+## Error responses
+
+**Status codes:**
+- `401` - Unauthorized (invalid or missing API key)
+- `500` - Internal server error
+
+## CLI equivalent
+
+```bash
+# List all memories
+cems list
+
+# Filter by category
+cems list --category preferences
+
+# Limit results
+cems list --limit 50
+```
+
+## Related endpoints
+
+- [Search memories](/api/memory/search) - Find memories by query
+- [Get memory](/api/memory/get) - Get full details of a specific memory
+- [Add memory](/api/memory/add) - Create new memory

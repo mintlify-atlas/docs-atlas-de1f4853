@@ -1,0 +1,592 @@
+---
+title: Architecture
+description: CEMS system architecture, storage schema, and service components
+---
+
+CEMS is built as a client-server system with PostgreSQL + pgvector for unified storage. This architecture provides ACID compliance, vector search, and full-text search in a single database.
+
+## System Overview
+
+```mermaid
+graph TB
+    subgraph "Client (Local Machine)"
+        A[IDE Hooks]
+        B[CEMS CLI]
+        C[Observer Daemon]
+    end
+    
+    subgraph "Server (Docker Compose)"
+        D[cems-server:8765]
+        E[cems-mcp:8766]
+        F[PostgreSQL + pgvector:5432]
+    end
+    
+    A -->|HTTP| D
+    B -->|HTTP| D
+    C -->|HTTP| D
+    E -->|HTTP| D
+    D -->|SQL| F
+    
+    subgraph "External Services"
+        G[OpenRouter API]
+    end
+    
+    D -->|Embeddings| G
+    D -->|LLM Calls| G
+```
+
+## Services
+
+### PostgreSQL + pgvector (Port 5432)
+
+**Image:** `pgvector/pgvector:pg16`
+
+**Purpose:** Unified storage for vectors, metadata, and authentication.
+
+**Extensions:**
+- `pgvector` - Vector similarity search (HNSW index)
+- `pg_trgm` - Trigram-based fuzzy matching
+
+**Configuration:**
+```yaml
+postgres:
+  image: pgvector/pgvector:pg16
+  environment:
+    POSTGRES_DB: cems
+    POSTGRES_USER: cems
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  volumes:
+    - postgres_data:/var/lib/postgresql/data
+  ports:
+    - "5432:5432"
+```
+
+### CEMS Server (Port 8765)
+
+**Image:** Built from `Dockerfile`
+
+**Purpose:** Python REST API for memory operations.
+
+**Stack:**
+- **Framework:** Starlette (ASGI)
+- **Server:** uvicorn
+- **Language:** Python 3.12+
+
+**Key components:**
+- Memory operations (add, search, forget, update)
+- Session summarization
+- Tool learning extraction
+- Admin user management
+- Scheduled maintenance (APScheduler)
+
+**Configuration:**
+```yaml
+cems-server:
+  build: .
+  environment:
+    CEMS_DATABASE_URL: postgresql://cems:${POSTGRES_PASSWORD}@postgres:5432/cems
+    OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+    CEMS_ADMIN_KEY: ${CEMS_ADMIN_KEY}
+  ports:
+    - "8765:8765"
+  depends_on:
+    - postgres
+```
+
+### CEMS MCP (Port 8766)
+
+**Image:** Built from `mcp-wrapper/`
+
+**Purpose:** Model Context Protocol wrapper for MCP-compatible clients.
+
+**Stack:**
+- **Framework:** Express.js
+- **Runtime:** Node.js
+- **Protocol:** MCP over Streamable HTTP
+
+**Exposed tools:**
+- `memory_add` - Store a memory
+- `memory_search` - Search with full pipeline
+- `memory_get` - Retrieve by ID
+- `memory_forget` - Delete/archive
+- `memory_update` - Update content
+- `memory_maintenance` - Trigger maintenance
+
+**Configuration:**
+```yaml
+cems-mcp:
+  build: ./mcp-wrapper
+  environment:
+    CEMS_API_URL: http://cems-server:8765
+  ports:
+    - "8766:8766"
+  depends_on:
+    - cems-server
+```
+
+## Storage Schema
+
+### memory_documents Table
+
+Stores complete document content and metadata.
+
+```sql
+CREATE TABLE memory_documents (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,  -- SHA256 for deduplication
+    user_id TEXT NOT NULL,
+    team_id TEXT,  -- NULL for personal, set for shared
+    scope TEXT NOT NULL CHECK (scope IN ('personal', 'shared')),
+    category TEXT DEFAULT 'general',
+    title TEXT,
+    source TEXT,  -- 'session', 'observer', 'manual', 'tool'
+    source_ref TEXT,  -- 'project:myapp', 'repo:src/api.py:42'
+    tags TEXT[] DEFAULT '{}',
+    archived BOOLEAN DEFAULT false,
+    priority REAL DEFAULT 1.0,
+    pinned BOOLEAN DEFAULT false,
+    pin_reason TEXT,
+    pin_category TEXT,
+    expires_at TIMESTAMPTZ,
+    access_count INTEGER DEFAULT 0,
+    last_accessed TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX idx_docs_user ON memory_documents(user_id);
+CREATE INDEX idx_docs_team ON memory_documents(team_id);
+CREATE INDEX idx_docs_scope ON memory_documents(scope);
+CREATE INDEX idx_docs_category ON memory_documents(category);
+CREATE INDEX idx_docs_source_ref ON memory_documents(source_ref);
+CREATE INDEX idx_docs_archived ON memory_documents(archived) WHERE NOT archived;
+CREATE UNIQUE INDEX idx_docs_content_hash ON memory_documents(content_hash, user_id);
+```
+
+### memory_chunks Table
+
+Stores chunked content with embeddings for search.
+
+```sql
+CREATE TABLE memory_chunks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    document_id UUID NOT NULL REFERENCES memory_documents(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,  -- Position in document (0-indexed)
+    content TEXT NOT NULL,  -- Chunk content (up to 800 tokens)
+    embedding vector(1536),  -- pgvector type (text-embedding-3-small)
+    search_vector tsvector,  -- Full-text search (tsvector for BM25)
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(document_id, chunk_index)
+);
+
+-- Vector similarity search (HNSW = Hierarchical Navigable Small World)
+CREATE INDEX idx_chunks_embedding ON memory_chunks 
+    USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+
+-- Full-text search (GIN = Generalized Inverted Index)
+CREATE INDEX idx_chunks_fts ON memory_chunks 
+    USING gin (search_vector);
+
+CREATE INDEX idx_chunks_document ON memory_chunks(document_id);
+```
+
+**HNSW parameters:**
+- `m = 16` - Number of bi-directional links per node (higher = better recall, more memory)
+- `ef_construction = 64` - Size of dynamic candidate list during construction (higher = better quality, slower build)
+
+**tsvector update trigger:**
+```sql
+CREATE TRIGGER tsvector_update BEFORE INSERT OR UPDATE ON memory_chunks
+    FOR EACH ROW EXECUTE FUNCTION
+    tsvector_update_trigger(search_vector, 'pg_catalog.english', content);
+```
+
+### users Table
+
+Stores user accounts and API key authentication.
+
+```sql
+CREATE TABLE users (
+    id TEXT PRIMARY KEY,  -- Username
+    api_key_hash TEXT NOT NULL,  -- bcrypt hash of API key
+    team_id TEXT,  -- NULL for individual users
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    is_active BOOLEAN DEFAULT true
+);
+
+CREATE INDEX idx_users_team ON users(team_id);
+```
+
+**API key format:** `cems_usr_<32-char-random>` (SHA256 hashed with bcrypt)
+
+### teams Table
+
+Stores team information for shared memories.
+
+```sql
+CREATE TABLE teams (
+    id TEXT PRIMARY KEY,  -- Team name
+    display_name TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+### category_summaries Table
+
+Caches category summaries for fast profile generation.
+
+```sql
+CREATE TABLE category_summaries (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT,
+    team_id TEXT,
+    category TEXT NOT NULL,
+    scope TEXT NOT NULL CHECK (scope IN ('personal', 'shared')),
+    summary TEXT NOT NULL,
+    item_count INTEGER NOT NULL,
+    last_updated TIMESTAMPTZ DEFAULT NOW(),
+    version INTEGER DEFAULT 1
+);
+
+CREATE INDEX idx_summaries_user ON category_summaries(user_id);
+CREATE INDEX idx_summaries_team ON category_summaries(team_id);
+CREATE UNIQUE INDEX idx_summaries_unique ON category_summaries(
+    COALESCE(user_id, ''), 
+    COALESCE(team_id, ''), 
+    category, 
+    scope
+);
+```
+
+## Embeddings
+
+### Provider
+
+**Default:** OpenRouter API
+
+**Model:** `text-embedding-3-small` (OpenAI)
+
+**Dimensions:** 1536
+
+**Cost:** ~$0.02 per 1M tokens
+
+### Alternative: llama.cpp Server
+
+**Backend:** `CEMS_EMBEDDING_BACKEND=llamacpp_server`
+
+**Model:** `nomic-embed-text-v1.5` (768 dimensions)
+
+**Endpoint:** `http://localhost:8080/v1/embeddings`
+
+**Configuration:**
+```bash
+# Start llama.cpp server
+cd llama.cpp
+./llama-server \
+    -m models/nomic-embed-text-v1.5.Q8_0.gguf \
+    --embedding \
+    --port 8080
+
+# Configure CEMS
+export CEMS_EMBEDDING_BACKEND=llamacpp_server
+export CEMS_LLAMACPP_BASE_URL=http://localhost:8080
+export CEMS_EMBEDDING_DIMENSION=768
+```
+
+**Note:** Requires database re-indexing when switching backends (different dimensions).
+
+### Batch Support
+
+From `src/cems/embedding.py:embed_batch()`:
+
+```python
+async def embed_batch(texts: list[str]) -> list[list[float]]:
+    """Embed multiple texts in a single API call."""
+    response = await client.post(
+        "/embeddings",
+        json={"input": texts, "model": model}
+    )
+    return [item["embedding"] for item in response["data"]]
+```
+
+**Benefit:** 5-10x faster than sequential embedding for chunked documents.
+
+## Authentication
+
+### API Key Flow
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+    participant DB
+    
+    Client->>Server: POST /api/memory/search<br/>Authorization: Bearer cems_usr_abc123
+    Server->>DB: SELECT api_key_hash FROM users WHERE id = ?<br/>(hash lookup by username prefix)
+    DB-->>Server: api_key_hash
+    Server->>Server: bcrypt.verify(cems_usr_abc123, api_key_hash)
+    alt Valid
+        Server->>DB: SELECT memories...
+        DB-->>Server: Results
+        Server-->>Client: 200 OK + memories
+    else Invalid
+        Server-->>Client: 401 Unauthorized
+    end
+```
+
+### Admin Operations
+
+**Admin key:** Set via `CEMS_ADMIN_KEY` environment variable.
+
+**Protected endpoints:**
+- `POST /admin/users` - Create user
+- `GET /admin/users` - List users
+- `PATCH /admin/users/{id}` - Update user
+- `DELETE /admin/users/{id}` - Delete user
+- `POST /admin/users/{id}/reset-key` - Reset API key
+- `GET /admin/teams` - List teams
+- `POST /admin/teams` - Create team
+
+**Usage:**
+```bash
+curl -X POST http://localhost:8765/admin/users \
+  -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "alice", "team_id": "engineering"}'
+
+# Response:
+# {"api_key": "cems_usr_a8f7b2c1d3e4f5a6b7c8d9e0f1a2b3c4"}
+```
+
+## API Endpoints
+
+### Public API (User authentication)
+
+| Method | Endpoint | Purpose |
+|--------|----------|----------|
+| POST | `/api/memory/add` | Add a memory |
+| POST | `/api/memory/search` | Search memories |
+| GET | `/api/memory/get` | Get full document by ID |
+| GET | `/api/memory/list` | List all memories (paginated) |
+| POST | `/api/memory/forget` | Delete or archive memory |
+| POST | `/api/memory/update` | Update memory content |
+| POST | `/api/memory/log-shown` | Log which memories were shown (feedback) |
+| POST | `/api/memory/maintenance` | Trigger maintenance job |
+| GET | `/api/memory/status` | System status (memory count, categories) |
+| GET | `/api/memory/profile` | Session profile context |
+| GET | `/api/memory/foundation` | Foundation guidelines |
+| GET | `/api/memory/gate-rules` | Gate rules by project |
+| POST | `/api/session/summarize` | Session summary (observer) |
+| POST | `/api/tool/learning` | Tool learning extraction |
+| POST | `/api/index/repo` | Index git repository |
+
+### Admin API (Admin key required)
+
+| Method | Endpoint | Purpose |
+|--------|----------|----------|
+| GET | `/admin/users` | List all users |
+| POST | `/admin/users` | Create new user |
+| GET | `/admin/users/{id}` | Get user details |
+| PATCH | `/admin/users/{id}` | Update user |
+| DELETE | `/admin/users/{id}` | Delete user |
+| POST | `/admin/users/{id}/reset-key` | Reset API key |
+| GET | `/admin/teams` | List all teams |
+| POST | `/admin/teams` | Create new team |
+
+## Scheduled Maintenance
+
+From `src/cems/maintenance/scheduler.py`:
+
+### APScheduler Configuration
+
+```python
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+scheduler = BackgroundScheduler()
+
+# Nightly consolidation (3 AM)
+scheduler.add_job(
+    consolidate_duplicates,
+    CronTrigger(hour=3, minute=0),
+    id="consolidation"
+)
+
+# Nightly observation reflection (3:30 AM)
+scheduler.add_job(
+    reflect_observations,
+    CronTrigger(hour=3, minute=30),
+    id="observation_reflection"
+)
+
+# Weekly summarization (Sunday 4 AM)
+scheduler.add_job(
+    summarize_old_memories,
+    CronTrigger(day_of_week="sun", hour=4, minute=0),
+    id="summarization"
+)
+
+# Monthly re-indexing (1st of month, 5 AM)
+scheduler.add_job(
+    reindex_embeddings,
+    CronTrigger(day=1, hour=5, minute=0),
+    id="reindexing"
+)
+```
+
+### Job Details
+
+**Consolidation:**
+- Finds pairs with cosine similarity ≥ 0.92
+- Merges content (keeps newer/more-accessed version)
+- Updates metadata (sums access counts, keeps max priority)
+- Soft-deletes duplicate
+
+**Observation Reflection:**
+- Groups observations by `source_ref` (project)
+- LLM condenses observations into high-level insights
+- Stores as new memory with `category: context`
+- Archives original observations
+
+**Summarization:**
+- Targets memories: `age > 90 days AND access_count < 3`
+- LLM generates 2-3 sentence summary
+- Replaces original content with summary
+- Sets `archived: true` on original
+
+**Re-indexing:**
+- Rebuilds HNSW index for vector search
+- Regenerates tsvector for full-text search
+- Permanently deletes memories with `archived: true AND age > 180 days`
+
+## Client Components
+
+### CEMS CLI
+
+**Installation:** `uv tool install cems`
+
+**Commands:**
+```bash
+cems add "I prefer dark mode"           # Add memory
+cems search "coding preferences"        # Search
+cems list                               # List all
+cems status                             # System status
+cems health                             # Health check
+cems setup                              # Configure IDE hooks
+cems update                             # Update + re-deploy hooks
+cems maintenance --job consolidation   # Run maintenance
+cems uninstall                          # Remove hooks
+```
+
+### Observer Daemon
+
+**Process:** `cems-observer` (background)
+
+**Configuration:**
+```bash
+# Start observer
+cems-observer &
+
+# Or via systemd
+sudo systemctl enable cems-observer
+sudo systemctl start cems-observer
+```
+
+**Behavior:**
+- Polls `~/.claude/projects/*/` every 30 seconds
+- Tracks read position per project in `~/.cems/observer_state.json`
+- Accumulates until 50KB threshold
+- Sends to `POST /api/session/summarize`
+
+### IDE Hooks
+
+**Claude Code** (`~/.claude/hooks/`):
+- `cems_session_start.py` - Profile injection
+- `cems_user_prompts_submit.py` - Memory search
+- `cems_post_tool_use.py` - Tool learning
+- `cems_pre_tool_use.py` - Gate rules
+- `cems_stop.py` - Session analysis
+- `cems_pre_compact.py` - Pre-compaction hook
+
+**Cursor** (`~/.cursor/hooks/`):
+- `cems_session_start.py`
+- `cems_agent_response.py`
+- `cems_stop.py`
+
+**Codex** (`~/.codex/commands/`):
+- `recall.md`, `remember.md`, `foundation.md`
+
+**Goose** (`~/.config/goose/config.yaml`):
+- MCP extension configuration
+
+## Deployment
+
+### Quick Start
+
+```bash
+# 1. Clone repository
+git clone https://github.com/chocksy/cems.git && cd cems
+
+# 2. Configure environment
+cp .env.example .env
+# Edit .env with OPENROUTER_API_KEY and CEMS_ADMIN_KEY
+
+# 3. Start services
+docker compose up -d
+
+# 4. Create first user
+source .env
+curl -X POST http://localhost:8765/admin/users \
+  -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "alice"}'
+```
+
+### Environment Variables
+
+**Required:**
+```bash
+OPENROUTER_API_KEY=sk_or_v1_xxx  # From https://openrouter.ai/keys
+CEMS_ADMIN_KEY=$(openssl rand -hex 32)  # Admin authentication
+```
+
+**Optional:**
+```bash
+POSTGRES_PASSWORD=cems_secure_password  # Change in production
+CEMS_EMBEDDING_BACKEND=openrouter  # or llamacpp_server
+CEMS_EMBEDDING_DIMENSION=1536  # 1536 for OpenRouter, 768 for llama.cpp
+CEMS_RERANKER_BACKEND=disabled  # Reranker support (future)
+```
+
+### Production Considerations
+
+**Security:**
+- Change `POSTGRES_PASSWORD` from default
+- Use strong `CEMS_ADMIN_KEY` (32+ chars)
+- Enable SSL for PostgreSQL in production
+- Use reverse proxy (nginx/Caddy) for HTTPS
+
+**Performance:**
+- Scale PostgreSQL vertically (memory for HNSW index)
+- Consider read replicas for high read loads
+- Monitor embedding API rate limits (OpenRouter: 50 req/min)
+
+**Backups:**
+```bash
+# Backup PostgreSQL
+docker exec cems-postgres pg_dump -U cems cems > backup.sql
+
+# Restore
+cat backup.sql | docker exec -i cems-postgres psql -U cems cems
+```
+
+## Related Concepts
+
+- [How It Works](/concepts/how-it-works) - System lifecycle and integration
+- [Memory Types](/concepts/memory-types) - Schema details and categories
+- [Search Pipeline](/concepts/search-pipeline) - Retrieval implementation

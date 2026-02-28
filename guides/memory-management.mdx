@@ -1,0 +1,573 @@
+---
+title: Memory Management
+description: Understanding the CEMS memory lifecycle, maintenance jobs, and best practices
+---
+
+## Memory Lifecycle
+
+CEMS memories go through several stages from creation to archival:
+
+```
+Creation → Active Use → Consolidation → Summarization → Re-indexing → Archive
+```
+
+### 1. Creation
+
+Memories are created via:
+- Skills: `/remember`, `/share`
+- CLI: `cems add`
+- MCP tools: `memory_add`
+- Hooks: automatic extraction during sessions
+- Observer: session learning observations
+- Indexing: `cems index repo`
+
+**Creation Process:**
+1. Content is received and validated
+2. Atomic facts are extracted
+3. Check for existing similar memories (cosine similarity)
+4. Decision: ADD (new), UPDATE (modify), or DUPLICATE (skip)
+5. Generate embedding via text-embedding-3-small (1536 dimensions)
+6. Store in PostgreSQL with pgvector
+7. Update access tracking
+
+### 2. Active Use
+
+**Access Tracking:**
+
+Every memory search that returns a result triggers access tracking:
+- `last_accessed_at` timestamp updated
+- `access_count` incremented
+- Feedback tracked via `memory_log_shown` API endpoint
+
+This data helps maintenance jobs identify:
+- Important memories (frequently accessed)
+- Stale memories (never or rarely accessed)
+- Relevant memories (high user satisfaction)
+
+**Search Pipeline:**
+
+Memories are retrieved through a multi-stage pipeline:
+
+```
+Query → Understanding → Synthesis → HyDE → Retrieval → RRF Fusion → Filtering → Scoring → Assembly → Results
+```
+
+| Stage | What It Does | LLM Calls |
+|-------|-------------|------------|
+| 1. Query Understanding | LLM routes to vector or hybrid strategy | 1 |
+| 2. Query Synthesis | LLM expands query into 2-5 search terms | 1 |
+| 3. HyDE | Generates hypothetical ideal answer | 1 |
+| 4. Candidate Retrieval | pgvector HNSW + tsvector BM25 | 0 |
+| 5. RRF Fusion | Reciprocal Rank Fusion | 0 |
+| 6. Relevance Filtering | Remove low-quality results | 0 |
+| 7. Scoring Adjustments | Time decay, priority boost | 0 |
+| 8. Token-Budgeted Assembly | Greedy selection | 0 |
+
+**Search Modes:**
+- `vector` - Fast (0 LLM calls)
+- `hybrid` - Thorough (3-4 LLM calls)
+- `auto` - Smart routing (default)
+
+### 3. Consolidation
+
+**Schedule:** Nightly at 3 AM
+
+**Purpose:** Merge semantic duplicates to reduce memory clutter
+
+**Process:**
+1. Find memories with high cosine similarity (>= 0.92)
+2. Group by similarity clusters
+3. Merge duplicate memories into one canonical version
+4. Update references and embeddings
+5. Archive merged duplicates
+
+**Trigger manually:**
+```bash
+cems maintenance run consolidation
+```
+
+**What Gets Consolidated:**
+- Nearly identical memories from different sessions
+- Rephrased versions of the same fact
+- Updated versions of outdated information
+
+**What's Protected:**
+- Pinned memories (never consolidated)
+- Memories with `pin_reason` set
+- Foundation/constitution memories
+
+### 4. Summarization
+
+**Schedule:** Weekly on Sunday at 4 AM
+
+**Purpose:** Compress old memories and prune stale entries
+
+**Process:**
+1. Identify old, low-access memories (>30 days old, &lt;2 accesses)
+2. Group related memories by project/category
+3. Generate compressed summaries using LLM
+4. Replace verbose memories with concise versions
+5. Archive completely stale memories (never accessed)
+
+**Trigger manually:**
+```bash
+cems maintenance run summarization
+```
+
+**Pruning Criteria:**
+
+Memories are pruned if:
+- Age > 90 days AND access_count = 0
+- Age > 180 days AND access_count < 2
+- Marked as archived/deleted
+- Never used (observation_count = 0 for observer memories)
+
+**Protected from Pruning:**
+- Pinned memories
+- Foundation guidelines
+- Constitution/playbook rules
+- Gate rules
+- Recently accessed memories (&lt;30 days)
+
+### 5. Re-indexing
+
+**Schedule:** Monthly on the 1st at 5 AM
+
+**Purpose:** Rebuild embeddings and archive dead memories
+
+**Process:**
+1. Re-generate embeddings for all active memories
+2. Update vector indexes (HNSW)
+3. Archive memories that failed re-indexing
+4. Rebuild graph connections
+5. Update metadata and statistics
+
+**Trigger manually:**
+```bash
+cems maintenance run reindex
+```
+
+**Why Re-index:**
+- Embedding model updates
+- Index corruption recovery
+- Performance optimization
+- Metadata corrections
+
+### 6. Archive
+
+**Soft Delete:**
+
+Default deletion mode (preserves for audit):
+- `deleted_at` timestamp set
+- Won't appear in searches
+- Can be recovered by admin
+- Preserved for compliance
+
+**Hard Delete:**
+
+Permanent removal:
+- Memory completely removed from database
+- Embeddings deleted
+- Graph connections removed
+- Cannot be recovered
+
+**Archival Triggers:**
+- User deletion: `/forget` or `cems delete`
+- Maintenance pruning (stale memories)
+- Consolidation (duplicate resolution)
+- Manual admin action
+
+## Memory Scopes
+
+### Personal Memories
+
+**Visibility:** Only the user who created them
+
+**Use Cases:**
+- Individual preferences ("I prefer dark mode")
+- Personal workflow patterns
+- Private coding style choices
+- Learning notes and reminders
+
+**Creation:**
+```bash
+cems add "I prefer Python for backend" -s personal
+/remember I prefer Python for backend
+```
+
+### Shared Memories
+
+**Visibility:** All users in the same team
+
+**Requirements:** Must have `CEMS_TEAM_ID` configured
+
+**Use Cases:**
+- Team conventions and standards
+- Architecture decisions (ADRs)
+- Deployment processes
+- Codebase patterns
+- Onboarding knowledge
+
+**Creation:**
+```bash
+cems add "API uses REST with /api/v1/" -s shared
+/share API uses REST with /api/v1/
+```
+
+### Team Configuration
+
+Set team ID in credentials:
+```bash
+# ~/.cems/credentials
+CEMS_API_URL=https://cems.example.com
+CEMS_API_KEY=cems_usr_...
+CEMS_TEAM_ID=engineering
+```
+
+## Memory Categories
+
+Categories help organize and filter memories:
+
+| Category | Use Cases | Examples |
+|----------|-----------|----------|
+| `preferences` | Personal choices, style | "I prefer dark mode", "Use 2-space tabs" |
+| `conventions` | Team standards, patterns | "Snake_case for columns", "REST versioning" |
+| `architecture` | System design, ADRs | "Microservices via queue", "PostgreSQL for DB" |
+| `decisions` | Important choices | "Chose TypeScript", "Deploy via Docker" |
+| `workflow` | Processes, procedures | "Deploy to staging first", "PR review required" |
+| `errors` | Debugging insights | "CORS needs credentials:true", "JWT expires 24h" |
+| `learnings` | Insights, TIL | "Cursor position in editor", "Cache invalidation" |
+| `general` | Uncategorized | Default for unspecified |
+| `guidelines` | Foundation rules | Constitution, playbook rules |
+| `gate-rules` | PreToolUse blocking | "Never deploy to prod via CLI" |
+
+**Set category:**
+```bash
+cems add "Content" -c architecture
+/remember --category preferences I prefer dark mode
+```
+
+## Memory Tags
+
+Tags provide flexible filtering and grouping:
+
+**Common Tags:**
+- `foundation`, `constitution` - Foundation guidelines
+- `playbook`, `operational` - Playbook rules
+- `principle:01`, `rule-id:p01` - Rule identifiers
+- `auth`, `security` - Security-related
+- `deploy`, `process` - Deployment
+- `testing`, `quality` - Quality assurance
+- Project-specific tags
+
+**Add tags:**
+```bash
+cems add "Content" -t auth -t security
+/remember --tags auth,security JWT tokens expire after 24h
+```
+
+**Search by tags:**
+```bash
+cems search "security" --category guidelines
+```
+
+## Pinning Memories
+
+Pinned memories are protected from automatic maintenance:
+
+**What Pinning Does:**
+- Prevents consolidation
+- Prevents pruning
+- Prevents summarization
+- Prevents archival by maintenance jobs
+
+**When to Pin:**
+- Foundation guidelines and rules
+- Critical architectural decisions
+- Gate rules for PreToolUse hook
+- Canonical documentation references
+- Onboarding checklists
+
+**How to Pin:**
+```bash
+cems add "Content" --pin --pin-reason "foundational rule"
+```
+
+**Pin Reasons:**
+
+Always provide a reason for pinning:
+- "foundational constitution memory"
+- "critical architecture decision"
+- "gate rule for production safety"
+- "canonical team convention"
+
+## Best Practices
+
+### What to Store
+
+**Good candidates:**
+- User preferences and style choices
+- Project conventions and naming patterns
+- Architecture and infrastructure decisions
+- Debugging insights and solutions to recurring problems
+- Workflow patterns and deployment processes
+- Foundation guidelines and rules
+- Gate rules for safety enforcement
+
+**What NOT to store:**
+- Session-specific context (current task, temporary state)
+- Information already in the codebase
+- Build output or error messages being debugged right now
+- Speculative conclusions from a single observation
+- Secrets or credentials
+- Large code blocks (use references instead)
+
+### Memory Quality
+
+**Write Atomic Facts:**
+
+Good:
+```
+/remember JWT tokens expire after 24 hours
+/remember Database uses snake_case for column names
+/remember Deploy requires CI green + manual approval
+```
+
+Bad (too broad):
+```
+/remember The whole authentication system works like this: ...
+```
+
+**Be Specific:**
+
+Good:
+```
+/remember Python backend uses FastAPI with async handlers
+```
+
+Bad (too vague):
+```
+/remember Use Python
+```
+
+**Include Context:**
+
+Good:
+```
+/remember API pagination: use ?page=N&limit=M, max limit=100
+```
+
+Bad (missing details):
+```
+/remember API uses pagination
+```
+
+### Project Context
+
+Always include project context for better recall:
+
+```bash
+# Automatic via MCP tools (detects from git remote)
+/remember Convention: use snake_case for SQL columns
+
+# Manual via CLI
+cems add "Convention: snake_case" --source-ref "project:org/repo"
+```
+
+**Project Scoping Benefits:**
+- Same-project memories are boosted in search
+- Cross-project noise is reduced
+- Maintenance jobs group by project
+- Observer associates sessions with projects
+
+### Search Strategy
+
+**Use Natural Language:**
+```bash
+cems search "how do we handle user authentication"
+```
+
+Better than:
+```bash
+cems search "auth"
+```
+
+**Filter by Scope:**
+```bash
+cems search "conventions" --scope shared     # Team conventions
+cems search "preferences" --scope personal  # Personal choices
+```
+
+**Debug Poor Results:**
+```bash
+cems search "query" --raw  # Bypass relevance filtering
+```
+
+**Fetch Full Content:**
+
+When search results are truncated, use `memory_get`:
+```json
+{
+  "tool": "memory_get",
+  "arguments": {
+    "memory_id": "abc123"
+  }
+}
+```
+
+### Maintenance Timing
+
+Run maintenance during off-hours to avoid disrupting active sessions:
+
+**Scheduled Times:**
+- Consolidation: 3:00 AM
+- Observation Reflection: 3:30 AM
+- Summarization: Sunday 4:00 AM
+- Re-indexing: 1st of month 5:00 AM
+
+**Manual Triggers:**
+
+Run after major changes:
+```bash
+cems maintenance run consolidation  # After bulk imports
+cems maintenance run reindex        # After embedding model update
+```
+
+### Observer Integration
+
+The observer daemon automatically learns from sessions:
+
+**What It Observes:**
+- High-level workflow patterns
+- Tool usage and preferences
+- Project structure and conventions
+- Deployment processes
+- Error resolution patterns
+
+**Observer Memories:**
+- Tagged with `observer` or `session:*`
+- Include project context
+- Incremental updates during sessions
+- Finalized on session end
+
+See [Observer Daemon](/guides/observer-daemon) for details.
+
+## Storage Details
+
+### Database Schema
+
+**memory_documents:**
+- Document-level metadata
+- User/team scoping
+- Categories and tags
+- Soft-delete support
+- Pinning and access tracking
+
+**memory_chunks:**
+- Chunked content (for large documents)
+- 1536-dim vector embeddings
+- HNSW index for vector search
+- Full-text search (tsvector + GIN index)
+
+**users / teams:**
+- Authentication via bcrypt-hashed API keys
+- Team membership
+
+### Embedding Model
+
+**Model:** text-embedding-3-small
+
+**Provider:** OpenRouter
+
+**Dimensions:** 1536
+
+**Features:**
+- Batch support for bulk operations
+- Semantic similarity via cosine distance
+- HNSW index for fast approximate search
+
+### Vector Search
+
+**Index Type:** HNSW (Hierarchical Navigable Small World)
+
+**Distance Metric:** Cosine similarity
+
+**Parameters:**
+- `m` = 16 (connections per node)
+- `ef_construction` = 64 (build quality)
+- `ef_search` = 40 (query quality)
+
+**Performance:**
+- 98% recall@5 on benchmark
+- Sub-10ms query latency (10k memories)
+
+### Full-Text Search
+
+**Index Type:** GIN (Generalized Inverted Index)
+
+**Features:**
+- PostgreSQL tsvector
+- BM25 ranking
+- Stemming and stop words
+- Combined with vector search via RRF fusion
+
+## Troubleshooting
+
+### Memory Not Being Recalled
+
+**Diagnosis:**
+```bash
+cems health                        # Check connection
+cems search "test"                 # Test search
+cems search "query" --raw          # Debug mode
+```
+
+**Common Causes:**
+- Query too vague (use natural language)
+- Wrong scope (check personal vs shared)
+- Project mismatch (cross-project penalty)
+- Relevance threshold too high
+
+### Duplicate Memories
+
+**Run consolidation:**
+```bash
+cems maintenance run consolidation
+```
+
+**Manual cleanup:**
+```bash
+cems search "duplicate content"
+cems delete <memory_id>
+```
+
+### Stale Memories
+
+**Run summarization:**
+```bash
+cems maintenance run summarization
+```
+
+**Check stale candidates:**
+```bash
+cems list --scope personal
+```
+
+### Poor Search Quality
+
+**Debug:**
+```bash
+cems search "query" --raw -v
+```
+
+**Solutions:**
+- Enable query synthesis: `--no-synthesis` OFF
+- Enable graph traversal: `--no-graph` OFF
+- Increase token budget: `--max-tokens 8000`
+- Run re-indexing: `cems maintenance run reindex`
+
+## Related Pages
+
+- [Skills & Commands](/guides/skills-commands) - Skills and slash commands reference
+- [CLI Usage](/guides/cli-usage) - Command-line interface reference
+- [Observer Daemon](/guides/observer-daemon) - Background session learning

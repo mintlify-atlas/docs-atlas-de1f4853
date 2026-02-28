@@ -1,0 +1,495 @@
+---
+title: User Management
+description: Create and manage users via the Admin API
+---
+
+## Admin API Overview
+
+The Admin API provides endpoints for user and team management. All admin endpoints require authentication via the `CEMS_ADMIN_KEY` set during deployment.
+
+**Base URL:** `http://localhost:8765/admin`
+
+**Authentication:** Bearer token (use `CEMS_ADMIN_KEY`)
+
+## Creating Your First User
+
+After deploying the server, create a user to get an API key:
+
+<Steps>
+  <Step title="Set your admin key">
+    ```bash
+    export CEMS_ADMIN_KEY="your-admin-key-from-env"
+    ```
+  </Step>
+
+  <Step title="Create a user">
+    ```bash
+    curl -X POST http://localhost:8765/admin/users \
+      -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "username": "alice",
+        "email": "alice@example.com"
+      }'
+    ```
+
+    **Response:**
+    ```json
+    {
+      "user": {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "username": "alice",
+        "email": "alice@example.com",
+        "is_admin": false,
+        "api_key_prefix": "cems_ak_a1b2c3d4"
+      },
+      "api_key": "cems_ak_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6",
+      "message": "User created. Save the API key - it will not be shown again."
+    }
+    ```
+
+    <Warning>
+      **Save the API key immediately!** It will only be shown once. The key is hashed with bcrypt before storage.
+    </Warning>
+  </Step>
+
+  <Step title="Give the API key to the user">
+    Send the API key to Alice securely. She will use it to configure her client:
+
+    ```bash
+    # Alice runs this on her machine
+    export CEMS_API_KEY="cems_ak_a1b2c3d4..."
+    export CEMS_API_URL="https://cems.example.com"
+    curl -fsSL https://getcems.com/install.sh | bash
+    ```
+  </Step>
+</Steps>
+
+## User API Endpoints
+
+### POST /admin/users
+
+Create a new user.
+
+**Request:**
+```json
+{
+  "username": "bob",           // Required: unique username
+  "email": "bob@example.com",  // Optional: email address
+  "is_admin": false,            // Optional: admin privileges
+  "settings": {}                // Optional: user settings
+}
+```
+
+**Response:**
+```json
+{
+  "user": {
+    "id": "uuid",
+    "username": "bob",
+    "email": "bob@example.com",
+    "is_admin": false,
+    "api_key_prefix": "cems_ak_x1y2z3a4"
+  },
+  "api_key": "cems_ak_x1y2z3a4...",  // Only shown once!
+  "message": "User created. Save the API key - it will not be shown again."
+}
+```
+
+**Errors:**
+- `400` - Username or email already exists
+- `401` - Missing Authorization header
+- `403` - Invalid admin key
+
+### GET /admin/users
+
+List all users.
+
+**Query Parameters:**
+- `include_inactive` (boolean) - Include inactive users (default: false)
+- `limit` (number) - Max users to return (default: 100)
+- `offset` (number) - Pagination offset (default: 0)
+
+**Request:**
+```bash
+curl -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+  "http://localhost:8765/admin/users?limit=10&offset=0"
+```
+
+**Response:**
+```json
+{
+  "users": [
+    {
+      "id": "uuid",
+      "username": "alice",
+      "email": "alice@example.com",
+      "is_admin": false,
+      "is_active": true,
+      "api_key_prefix": "cems_ak_a1b2c3d4",
+      "created_at": "2024-01-15T10:30:00Z",
+      "last_active": "2024-01-20T14:22:00Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+### GET /admin/users/{user_id}
+
+Get user details by ID or username.
+
+**Request:**
+```bash
+# By ID
+curl -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+  http://localhost:8765/admin/users/550e8400-e29b-41d4-a716-446655440000
+
+# By username
+curl -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+  http://localhost:8765/admin/users/alice
+```
+
+**Response:**
+```json
+{
+  "id": "uuid",
+  "username": "alice",
+  "email": "alice@example.com",
+  "is_admin": false,
+  "is_active": true,
+  "api_key_prefix": "cems_ak_a1b2c3d4",
+  "created_at": "2024-01-15T10:30:00Z",
+  "last_active": "2024-01-20T14:22:00Z",
+  "settings": {}
+}
+```
+
+### PATCH /admin/users/{user_id}
+
+Update user details.
+
+**Request:**
+```bash
+curl -X PATCH http://localhost:8765/admin/users/{user_id} \
+  -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "newemail@example.com",
+    "is_active": false,
+    "is_admin": true,
+    "settings": {"theme": "dark"}
+  }'
+```
+
+All fields are optional. Only provided fields will be updated.
+
+### DELETE /admin/users/{user_id}
+
+Delete a user permanently.
+
+<Warning>
+  This is a **hard delete**. All user data and memories will be deleted. Use `PATCH` with `is_active: false` for soft delete.
+</Warning>
+
+**Request:**
+```bash
+curl -X DELETE http://localhost:8765/admin/users/{user_id} \
+  -H "Authorization: Bearer $CEMS_ADMIN_KEY"
+```
+
+**Response:**
+```json
+{"message": "User deleted"}
+```
+
+### POST /admin/users/{user_id}/reset-key
+
+Reset a user's API key (e.g., if compromised).
+
+**Request:**
+```bash
+curl -X POST http://localhost:8765/admin/users/{user_id}/reset-key \
+  -H "Authorization: Bearer $CEMS_ADMIN_KEY"
+```
+
+**Response:**
+```json
+{
+  "user": {
+    "id": "uuid",
+    "username": "alice",
+    "api_key_prefix": "cems_ak_z9y8x7w6"  // New prefix
+  },
+  "api_key": "cems_ak_z9y8x7w6...",  // New key (shown once!)
+  "message": "API key reset. Save the new key - it will not be shown again."
+}
+```
+
+The old API key is immediately invalidated.
+
+## Team Management
+
+Teams allow shared memories across multiple users.
+
+### POST /admin/teams
+
+Create a new team.
+
+**Request:**
+```bash
+curl -X POST http://localhost:8765/admin/teams \
+  -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "engineering",
+    "company_id": "acme-corp",
+    "settings": {}
+  }'
+```
+
+**Response:**
+```json
+{
+  "team": {
+    "id": "uuid",
+    "name": "engineering",
+    "company_id": "acme-corp"
+  },
+  "message": "Team created"
+}
+```
+
+### GET /admin/teams
+
+List all teams.
+
+**Request:**
+```bash
+curl -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+  http://localhost:8765/admin/teams
+```
+
+### POST /admin/teams/{team_id}/members
+
+Add a user to a team.
+
+**Request:**
+```bash
+curl -X POST http://localhost:8765/admin/teams/{team_id}/members \
+  -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "alice",  // Username or UUID
+    "role": "member"     // admin, member, or viewer
+  }'
+```
+
+**Roles:**
+- `admin` - Full team management
+- `member` - Read/write team memories
+- `viewer` - Read-only access
+
+### DELETE /admin/teams/{team_id}/members/{user_id}
+
+Remove a user from a team.
+
+**Request:**
+```bash
+curl -X DELETE http://localhost:8765/admin/teams/{team_id}/members/{user_id} \
+  -H "Authorization: Bearer $CEMS_ADMIN_KEY"
+```
+
+## API Key Format
+
+CEMS generates API keys with the following format:
+
+```
+cems_ak_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6
+│       │       │
+│       │       └─ Random 40 hex characters (secrets.token_hex(24))
+│       └───────── 8-char prefix for identification
+└───────────────── Prefix: cems_ak (api key)
+```
+
+**Security:**
+- Keys are hashed with bcrypt (cost factor 12) before storage
+- Prefix stored separately for fast lookup
+- Keys never logged in plaintext
+- Verification uses constant-time comparison
+
+**Key Rotation:**
+- Use `POST /admin/users/{id}/reset-key` to invalidate and reissue
+- Old key stops working immediately
+
+## Authentication Flow
+
+When a client makes a request:
+
+1. Client sends: `Authorization: Bearer cems_ak_a1b2c3d4...`
+2. Server extracts prefix: `cems_ak_a1b2c3d4`
+3. Server queries users by prefix (indexed for speed)
+4. Server verifies key hash with bcrypt
+5. On match: Updates `last_active` timestamp and allows request
+6. On mismatch: Returns `401 Unauthorized`
+
+**Source:** `~/workspace/source/src/cems/admin/auth.py:11`
+
+## User Settings
+
+The `settings` field is a JSONB column for storing user preferences:
+
+```json
+{
+  "theme": "dark",
+  "default_scope": "personal",
+  "timezone": "America/Los_Angeles",
+  "notification_preferences": {
+    "email": true,
+    "weekly_summary": false
+  }
+}
+```
+
+Settings are freeform and application-defined.
+
+## Audit Logging
+
+All admin operations are logged to the `audit_log` table:
+
+```sql
+SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 10;
+```
+
+**Logged events:**
+- `user_created`
+- `user_updated`
+- `user_deleted`
+- `api_key_reset`
+- `team_created`
+- `member_added`
+- `member_removed`
+
+Each log includes:
+- `user_id` - Admin who performed the action
+- `action` - Operation type
+- `resource_type` - `user`, `team`, etc.
+- `resource_id` - Affected resource ID
+- `details` - JSON with additional context
+- `created_at` - Timestamp
+
+## Database Schema
+
+Relevant tables:
+
+```sql
+-- Users
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    username VARCHAR(255) UNIQUE NOT NULL,
+    email VARCHAR(255) UNIQUE,
+    api_key_hash VARCHAR(255) NOT NULL,
+    api_key_prefix VARCHAR(20) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE,
+    last_active TIMESTAMP WITH TIME ZONE,
+    is_active BOOLEAN DEFAULT true,
+    is_admin BOOLEAN DEFAULT false,
+    settings JSONB DEFAULT '{}'
+);
+
+-- Teams
+CREATE TABLE teams (
+    id UUID PRIMARY KEY,
+    name VARCHAR(255) UNIQUE NOT NULL,
+    company_id VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE,
+    settings JSONB DEFAULT '{}'
+);
+
+-- Team Membership
+CREATE TABLE team_members (
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    team_id UUID REFERENCES teams(id) ON DELETE CASCADE,
+    role VARCHAR(50) DEFAULT 'member',
+    joined_at TIMESTAMP WITH TIME ZONE,
+    PRIMARY KEY (user_id, team_id)
+);
+```
+
+**Source:** `~/workspace/source/deploy/init.sql:11`
+
+## Troubleshooting
+
+### Invalid admin key
+
+```json
+{"error": "Invalid admin key"}
+```
+
+**Fix:** Verify `CEMS_ADMIN_KEY` matches `.env`:
+```bash
+source .env
+echo $CEMS_ADMIN_KEY
+```
+
+### Username already exists
+
+```json
+{"error": "Username 'alice' already exists"}
+```
+
+**Fix:** Choose a different username or check existing users:
+```bash
+curl -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+  http://localhost:8765/admin/users
+```
+
+### User not found
+
+```json
+{"error": "User not found"}
+```
+
+**Fix:** Verify user ID or username:
+```bash
+curl -H "Authorization: Bearer $CEMS_ADMIN_KEY" \
+  http://localhost:8765/admin/users
+```
+
+### Database not configured
+
+```json
+{"error": "Database not configured (CEMS_DATABASE_URL not set)"}
+```
+
+**Fix:** Ensure `CEMS_DATABASE_URL` is set in docker-compose environment.
+
+## Admin CLI Commands
+
+You can also manage users via CLI (from inside the container):
+
+```bash
+# List users
+docker compose exec cems-server cems admin users list
+
+# Create user
+docker compose exec cems-server cems admin users create alice
+
+# Reset API key
+docker compose exec cems-server cems admin users reset-key alice
+```
+
+<Note>
+  CLI commands require `CEMS_ADMIN_KEY` to be set in the container environment.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Client Installation" icon="download" href="/quickstart">
+    Install CEMS client on developer machines
+  </Card>
+  <Card title="API Reference" icon="code" href="/api-reference">
+    Explore all API endpoints
+  </Card>
+</CardGroup>

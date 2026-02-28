@@ -1,0 +1,380 @@
+---
+title: Skills & Commands
+description: Complete guide to CEMS skills and slash commands for searching and storing memories
+---
+
+## Overview
+
+CEMS provides skills (slash commands) that enable AI assistants to search and store persistent memories across sessions. Skills are available in Claude Code, Cursor, Codex, and Goose with slight variations based on IDE capabilities.
+
+## Available Skills
+
+### /recall - Search Memories
+
+Search your memories for relevant information using semantic search.
+
+**Usage:**
+```
+/recall <search query>
+```
+
+**Examples:**
+```
+/recall What do I prefer for backend development?
+/recall database conventions
+/recall How do we handle authentication?
+/recall deployment process
+```
+
+**How It Works:**
+
+1. Detects the current project from git remote (e.g., "Chocksy/cems")
+2. Converts your query to embeddings using text-embedding-3-small
+3. Searches both personal and shared memory (by default)
+4. Boosts same-project results, penalizes cross-project noise
+5. Ranks results by relevance score with time decay
+6. Returns the most relevant matches
+
+**Options:**
+```
+/recall --scope personal my coding preferences
+/recall --scope shared team conventions
+/recall --scope both authentication patterns
+/recall --category decisions database choices
+/recall --limit 10 all architecture decisions
+```
+
+**MCP Tool Used:** `memory_search` with:
+- `query`: Your search text (required)
+- `scope`: "personal", "shared", or "both" (default: both)
+- `max_results`: Maximum results (default: 10, range: 1-20)
+- `max_tokens`: Token budget for results (default: 4000)
+- `enable_graph`: Include related memories via graph traversal (default: true)
+- `enable_query_synthesis`: Expand query with LLM for better retrieval (default: true)
+- `project`: Auto-detected from git remote (org/repo format)
+- `raw`: Debug mode to bypass relevance filtering (default: false)
+
+**For Truncated Results:**
+
+When search results are truncated (content ends with `...`), fetch the full document:
+```json
+{
+  "tool": "memory_get",
+  "arguments": {
+    "memory_id": "the-memory-id-from-search-result"
+  }
+}
+```
+
+### /remember - Add Personal Memory
+
+Add a memory to your personal memory store.
+
+**Usage:**
+```
+/remember <fact or information to remember>
+```
+
+**Examples:**
+```
+/remember I prefer Python for backend development
+/remember The database schema uses snake_case for column names
+/remember User authentication uses JWT tokens with 24h expiry
+```
+
+**How It Works:**
+
+The `memory_add` MCP tool automatically:
+1. Extracts atomic facts from your input
+2. Checks for existing similar memories
+3. Decides whether to ADD (new), UPDATE (modify existing), or skip (duplicate)
+4. Stores with timestamp and access tracking
+
+**Options:**
+```
+/remember --category preferences I like dark mode in all editors
+/remember --category decisions We chose PostgreSQL for the main database
+/remember --tags auth,security Session tokens expire after 1 hour of inactivity
+```
+
+**MCP Tool Used:** `memory_add` with:
+- `content`: Your input (required)
+- `scope`: "personal" (automatic for /remember)
+- `category`: Category for organization (default: "general")
+  - Available: preferences, conventions, architecture, decisions, workflow, errors, learnings, general
+- `tags`: Array of tags for filtering
+- `source_ref`: Project reference (auto-detected as "project:org/repo")
+
+**Project Context:**
+
+When running in a git repository, always include the project reference:
+1. Get git remote: `git remote get-url origin`
+2. Extract org/repo from URL:
+   - SSH: `git@github.com:org/repo.git` → `org/repo`
+   - HTTPS: `https://github.com/org/repo.git` → `org/repo`
+3. Pass as `source_ref: "project:org/repo"`
+
+This enables project-scoped memory recall where memories are boosted when searching from the same project.
+
+### /share - Add Team Memory
+
+Add a memory to the shared team memory store.
+
+**Usage:**
+```
+/share <fact or information to share with team>
+```
+
+**Examples:**
+```
+/share API endpoints follow REST conventions with versioning (/api/v1/...)
+/share Deploy process: merge to main, wait for CI, then run deploy script
+/share Architecture decision: microservices communicate via message queue
+```
+
+**Use Cases:**
+- Team conventions and standards
+- Architecture decisions (ADRs)
+- Deployment processes
+- Codebase patterns
+- Onboarding knowledge
+
+**Requirements:**
+
+You must have `CEMS_TEAM_ID` configured for shared memory to work.
+
+**Options:**
+```
+/share --category architecture We use hexagonal architecture pattern
+/share --category conventions All dates are stored in UTC
+/share --tags deploy,process Deploy requires manual approval for production
+```
+
+**MCP Tool Used:** `memory_add` with:
+- `content`: Your input
+- `scope`: "shared"
+- `category`: Default "general" or specified
+- `tags`: As specified
+
+### /forget - Remove Memory
+
+Remove a memory from the system.
+
+**Usage:**
+```
+/forget <memory_id>
+```
+
+**Examples:**
+```
+/forget abc123def456
+/forget --hard abc123def456  # Permanent deletion
+```
+
+**How It Works:**
+
+By default, memories are **archived** (soft delete):
+- They won't appear in searches
+- They can be recovered if needed
+- They're preserved for audit purposes
+
+Use `--hard` for permanent deletion when you want the memory completely removed.
+
+**Finding Memory IDs:**
+
+Memory IDs are returned when you:
+- Add a memory (`/remember`)
+- Search memories (`/recall`)
+- List memories via CLI
+
+**Example Workflow:**
+```
+/recall old preferences
+# Returns memories with IDs like "abc123..."
+
+/forget abc123
+# Archives that memory
+```
+
+**MCP Tool Used:** `memory_forget` with:
+- `memory_id`: The ID to remove (required)
+- `hard`: true for permanent deletion (default: false)
+
+### /context - Show Memory Status
+
+Show the current memory system status and context.
+
+**Usage:**
+```
+/context
+```
+
+**Output Shows:**
+- Current user ID
+- Team ID (if configured)
+- Storage location
+- Memory counts by scope
+- Category breakdown
+- Scheduler status
+
+**Example Output:**
+```
+CEMS Memory System Status
+========================================
+
+User ID: razvan
+Team ID: engineering
+Storage: /Users/razvan/.cems
+
+Personal Memories:
+- Total: 47
+- By category:
+  - preferences: 12
+  - decisions: 8
+  - patterns: 15
+  - context: 7
+  - general: 5
+
+Shared Memories:
+- Total: 23
+- By category:
+  - conventions: 10
+  - architecture: 8
+  - processes: 5
+
+Scheduler: Running
+- Next consolidation: Tonight 3:00 AM
+- Next summarization: Sunday 4:00 AM
+- Next reindex: Feb 1 5:00 AM
+```
+
+**MCP Resources Used:**
+- `memory://status` - System status
+- `memory://personal/summary` - Personal memory summary
+- `memory://shared/summary` - Shared memory summary
+
+## Foundation Guidelines Skill
+
+View foundation guidelines (rules, principles, constraints) stored in CEMS memory.
+
+**Usage:**
+
+When invoked or when the user asks about project rules/guidelines:
+
+1. Detect the current project from git remote
+2. Search for foundation guidelines via MCP:
+   ```json
+   {
+     "tool": "memory_search",
+     "arguments": {
+       "query": "foundation guidelines rules principles constitution",
+       "max_results": 20,
+       "scope": "both",
+       "project": "org/repo"
+     }
+   }
+   ```
+3. Filter results to only include memories that:
+   - Have tags containing "foundation" or "constitution"
+   - OR have category "guidelines"
+
+**Context:**
+
+Foundation guidelines are stable rules that apply across all sessions:
+- Coding standards and conventions
+- Project-specific constraints
+- Team agreements and principles
+- Quality gates and review criteria
+
+They differ from regular memories in that they are meant to be always-on constraints, not just recalled information.
+
+## IDE-Specific Implementations
+
+### Claude Code
+
+Locations:
+- Skills: `~/.claude/skills/cems/`
+- Commands: `~/.claude/commands/`
+- 6 hooks, 6 skills, 2 commands
+- MCP server config in `~/.claude.json`
+
+**Available:**
+- `/recall` - Search memories
+- `/remember` - Add personal memory
+- `/share` - Add team memory
+- `/forget` - Delete memory
+- `/context` - Show status
+- Memory guide skill for proactive usage
+
+### Cursor
+
+Locations:
+- Skills: `~/.cursor/skills/`
+- 3 hooks, 5 skills
+- MCP config in `~/.cursor/mcp.json`
+
+**Available:**
+- `cems-recall` - Search memories
+- `cems-remember` - Add memory
+- `cems-forget` - Delete memory
+- `cems-share` - Share with team
+- `cems-context` - Memory status
+
+### Codex
+
+Locations:
+- Commands: `~/.codex/commands/`
+- Skills: `~/.codex/skills/`
+- 3 commands, 2 skills
+- MCP config in `~/.codex/config.toml`
+
+**Available:**
+- `recall` command - Search memories
+- `remember` command - Add memory
+- `foundation` command - View guidelines
+- `recall` skill - Search memories
+- `remember` skill - Add memory
+
+### Goose
+
+Location:
+- MCP extension config in `~/.config/goose/config.yaml`
+
+**Available:**
+All MCP tools via the cems extension:
+- `memory_search`
+- `memory_add`
+- `memory_forget`
+- `memory_update`
+- `memory_get`
+- `memory_maintenance`
+
+## Search Tips
+
+- **Always pass project:** Auto-detect from git remote to filter cross-project noise
+- Use natural language: "how do we handle authentication" > "auth"
+- Be specific: "Python backend database conventions" > "conventions"
+- The system uses semantic matching, not just keywords
+- Results include relevance scores and time decay ranking
+- Use `raw: true` to debug retrieval when results seem wrong
+
+## What to Store
+
+**Good candidates for memory:**
+- User preferences and style choices
+- Project conventions and naming patterns
+- Architecture and infrastructure decisions
+- Debugging insights and solutions to recurring problems
+- Workflow patterns and deployment processes
+
+**What NOT to store:**
+- Session-specific context (current task, temporary state)
+- Information already in the codebase
+- Build output or error messages being debugged right now
+- Speculative conclusions from a single observation
+
+## Related Pages
+
+- [CLI Usage](/guides/cli-usage) - Command-line interface reference
+- [Memory Management](/guides/memory-management) - Memory lifecycle and best practices
+- [Observer Daemon](/guides/observer-daemon) - Background session learning

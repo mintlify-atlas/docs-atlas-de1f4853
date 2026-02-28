@@ -1,0 +1,135 @@
+---
+title: Add memory
+description: Store a new memory in CEMS
+---
+
+Store a new memory document in the CEMS memory system. Content is stored as-is using the document+chunk model with automatic embedding generation.
+
+## Endpoint
+
+```
+POST /api/memory/add
+```
+
+**Authentication**: Required (Bearer token)
+
+## Request body
+
+<ParamField path="content" type="string" required>
+  The memory content to store. Can be free-form text.
+</ParamField>
+
+<ParamField path="category" type="string" default="general">
+  Memory category. One of: `preferences`, `decisions`, `patterns`, `context`, `learnings`, `general`, `gate-rules`, `guidelines`
+  
+  Functional categories (`gate-rules`, `guidelines`, `preferences`, `category-summary`) bypass normalization.
+</ParamField>
+
+<ParamField path="scope" type="string" default="personal">
+  Memory scope. Values:
+  - `personal` - Only visible to you
+  - `shared` - Visible to your entire team
+</ParamField>
+
+<ParamField path="source_ref" type="string">
+  Optional source reference for project-scoped recall. Format: `project:org/repo`
+  
+  Memories with a `source_ref` get a 1.3x boost when searching from the same project.
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  Optional tags for organization and filtering. Examples: `["api", "authentication"]`
+</ParamField>
+
+<ParamField path="timestamp" type="string">
+  Optional ISO 8601 timestamp for historical imports. Format: `2023-04-10T17:50:00Z`
+  
+  Use this when importing memories with specific event dates (e.g., eval benchmarks).
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Whether the operation succeeded
+</ResponseField>
+
+<ResponseField name="result" type="object">
+  Result details from the memory storage operation
+  
+  <Expandable title="properties">
+    <ResponseField name="document_id" type="string">
+      Unique identifier for the stored memory document
+    </ResponseField>
+    
+    <ResponseField name="chunks" type="integer">
+      Number of chunks created from the content
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Example
+
+```bash
+curl -X POST https://your-cems-server.com/api/memory/add \
+  -H "Authorization: Bearer $CEMS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "I prefer using TypeScript for all new backend services",
+    "category": "preferences",
+    "scope": "personal",
+    "tags": ["typescript", "backend"]
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "result": {
+    "document_id": "550e8400-e29b-41d4-a716-446655440000",
+    "chunks": 1
+  }
+}
+```
+
+## Project-scoped memories
+
+Use `source_ref` to associate memories with specific projects:
+
+```bash
+curl -X POST https://your-cems-server.com/api/memory/add \
+  -H "Authorization: Bearer $CEMS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "This API uses OAuth2 with PKCE flow for authentication",
+    "category": "context",
+    "source_ref": "project:acme/api-server",
+    "tags": ["oauth", "authentication"]
+  }'
+```
+
+When you search from the same project context, this memory gets a 1.3x scoring boost.
+
+## Batch adding
+
+For bulk ingestion, use the batch add endpoint instead, which offers:
+- Single HTTP request for multiple memories
+- Batched embedding generation (100 texts per API call)
+- Single database transaction
+- Optimized for eval benchmarks and large imports
+
+## Error responses
+
+<ResponseField name="error" type="string">
+  Error message if the request fails
+</ResponseField>
+
+**Status codes:**
+- `400` - Bad request (missing content, invalid timestamp format)
+- `401` - Unauthorized (invalid or missing API key)
+- `500` - Internal server error
+
+## Implementation reference
+
+See `src/cems/api/handlers/memory.py:45-107` for the complete implementation.

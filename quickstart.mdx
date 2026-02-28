@@ -1,80 +1,403 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Get from zero to working CEMS in 5 minutes
 ---
 
-## Get started in three steps
+## What You'll Need
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
+Before installing the CEMS client, you need two things from your CEMS admin:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Server URL" icon="link">
+    Example: `https://cems.example.com`
+  </Card>
+  <Card title="API Key" icon="key">
+    Starts with `cems_usr_...`
+  </Card>
 </CardGroup>
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  Don't have a server yet? See [Server Deployment](/deployment/overview) to set up your own CEMS server.
 </Note>
+
+## Installation
+
+<Steps>
+  <Step title="Run the installer">
+    The easiest way to install CEMS is with the one-line installer:
+
+    ```bash
+    curl -fsSL https://getcems.com/install.sh | bash
+    ```
+
+    The installer will:
+    1. Install [uv](https://docs.astral.sh/uv/) if missing
+    2. Install CEMS CLI tools (`cems`, `cems-server`, `cems-observer`)
+    3. Prompt for your API URL and key
+    4. Let you choose which IDEs to configure
+
+    <Accordion title="What if I want non-interactive install?">
+      Set environment variables and pipe directly:
+
+      ```bash
+      CEMS_API_KEY=your-key-here CEMS_API_URL=https://cems.example.com \
+        curl -fsSL https://getcems.com/install.sh | bash
+      ```
+    </Accordion>
+  </Step>
+
+  <Step title="Choose your IDE">
+    The installer will ask which IDE(s) to configure:
+
+    <Tabs>
+      <Tab title="Claude Code">
+        Installs to `~/.claude/`:
+        - 6 hooks (session lifecycle)
+        - 6 skills (`/remember`, `/recall`, `/share`, `/forget`, `/context`, memory guide)
+        - 2 commands
+        - Settings merged into `settings.json`
+      </Tab>
+      <Tab title="Cursor">
+        Installs to `~/.cursor/`:
+        - 3 hooks
+        - 5 skills
+        - MCP config merged into `mcp.json`
+      </Tab>
+      <Tab title="Codex">
+        Installs to `~/.codex/`:
+        - 3 commands
+        - 2 skills
+        - MCP config merged into `config.toml`
+      </Tab>
+      <Tab title="Goose">
+        Installs to `~/.config/goose/`:
+        - MCP extension block merged into `config.yaml`
+      </Tab>
+    </Tabs>
+
+    You can select multiple IDEs or choose "all" to configure everything.
+  </Step>
+
+  <Step title="Verify installation">
+    Check that CEMS is installed and can connect to your server:
+
+    ```bash
+    cems --version
+    ```
+
+    ```bash
+    cems health
+    ```
+
+    Expected output:
+    ```
+    ✓ Connected to CEMS server
+    ✓ API key valid
+    ✓ User: yourname
+    ```
+  </Step>
+</Steps>
+
+## Your First Memory
+
+Now let's add your first memory and recall it.
+
+<CodeGroup>
+```bash CLI
+# Add a personal preference
+cems add "I prefer Python for backend development"
+
+# Search for it
+cems search "backend preferences"
+
+# List all your memories
+cems list
+```
+
+```bash Claude Code Skills
+# In Claude Code, use slash commands:
+/remember I prefer Python for backend development
+/recall backend preferences
+/context
+```
+
+```bash Cursor Skills
+# In Cursor:
+/cems-remember I prefer Python for backend development
+/cems-recall backend preferences
+/cems-context
+```
+</CodeGroup>
+
+## Try Automatic Memory Injection
+
+CEMS automatically injects relevant memories when you chat with your AI assistant.
+
+<Steps>
+  <Step title="Add project-specific memories">
+    In a git repository, add some project context:
+
+    ```bash
+    /remember This project uses PostgreSQL with snake_case column names
+    /remember We follow REST conventions with /api/v1/ prefix
+    /remember Tests use pytest with fixtures in tests/conftest.py
+    ```
+  </Step>
+
+  <Step title="Start a new session">
+    Close and reopen your IDE, or start a new Claude Code session.
+  </Step>
+
+  <Step title="Ask a related question">
+    Try asking something related to your memories:
+
+    <CodeGroup>
+    ```plaintext Claude Code
+    "How should I name this new database table?"
+    ```
+
+    ```plaintext Claude Code
+    "Where should I add a new API endpoint?"
+    ```
+
+    ```plaintext Claude Code
+    "How do I write tests for this function?"
+    ```
+    </CodeGroup>
+
+    Your AI assistant will have your project conventions in context automatically!
+  </Step>
+</Steps>
+
+## Understanding Memory Scope
+
+CEMS supports two memory scopes:
+
+<CardGroup cols={2}>
+  <Card title="Personal Memory" icon="user">
+    Use `/remember` for personal preferences and private notes.
+    
+    Only you can see these memories.
+
+    ```bash
+    /remember I prefer dark mode
+    /remember My testing style uses fixtures
+    ```
+  </Card>
+  <Card title="Shared Memory" icon="users">
+    Use `/share` for team conventions and decisions.
+    
+    Everyone on your team can see these.
+
+    ```bash
+    /share API endpoints use /api/v1/ prefix
+    /share We deploy to production via Coolify
+    ```
+  </Card>
+</CardGroup>
+
+## Advanced Features
+
+<AccordionGroup>
+  <Accordion title="Categories and Tags">
+    Organize memories with categories and tags:
+
+    ```bash
+    /remember --category preferences I prefer Python type hints
+    /remember --category decisions --tags db,postgres We use PostgreSQL
+    ```
+
+    Search by category:
+    ```bash
+    /recall --category decisions database choice
+    ```
+  </Accordion>
+
+  <Accordion title="Project-Scoped Memories">
+    Memories automatically capture the git project context.
+
+    When you create a memory in `myorg/webapp`, it gets tagged with `project:myorg/webapp`.
+
+    When you search from that same project, those memories get boosted.
+    When you search from a different project, they're deprioritized.
+
+    This prevents cross-project noise while preserving access to all memories.
+  </Accordion>
+
+  <Accordion title="Observer Daemon">
+    The observer daemon runs in the background and watches your session transcripts.
+
+    It extracts high-level observations like:
+    - "User prefers to deploy via Docker Compose"
+    - "Project uses PostgreSQL for primary storage"
+    - "Team follows conventional commits style"
+
+    These observations are stored as memories and help build context over time.
+
+    Check observer status:
+    ```bash
+    ps aux | grep cems-observer
+    ```
+  </Accordion>
+
+  <Accordion title="Maintenance Jobs">
+    CEMS runs scheduled maintenance to keep your memory clean:
+
+    | Job | Schedule | Purpose |
+    |-----|----------|----------|
+    | Consolidation | Nightly 3 AM | Merge duplicates |
+    | Observation Reflection | Nightly 3:30 AM | Condense observations |
+    | Summarization | Weekly Sun 4 AM | Compress old memories |
+    | Re-indexing | Monthly 1st 5 AM | Rebuild embeddings |
+
+    Trigger maintenance manually:
+    ```bash
+    cems maintenance --job consolidation
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## CLI Reference
+
+Here are the most common CLI commands:
+
+<CodeGroup>
+```bash Status & Health
+cems status        # System status
+cems health        # Server health check
+cems --version     # Show version
+```
+
+```bash Memory Operations
+cems add "content"              # Add memory
+cems search "query"             # Search memories
+cems list                       # List all memories
+cems list --category decisions  # Filter by category
+```
+
+```bash Maintenance
+cems update                  # Update to latest version
+cems update --hooks          # Re-deploy hooks only
+cems maintenance --job NAME  # Run maintenance job
+```
+
+```bash Configuration
+cems setup                   # Re-run setup wizard
+cems uninstall              # Remove hooks/skills
+cems uninstall --all        # Remove everything including credentials
+```
+</CodeGroup>
+
+## What's Installed?
+
+The installer creates these files:
+
+<Tabs>
+  <Tab title="Claude Code">
+    ```
+    ~/.claude/
+    ├── settings.json           # Hooks config (merged)
+    ├── hooks/
+    │   ├── cems_session_start.py
+    │   ├── cems_user_prompts_submit.py
+    │   ├── cems_post_tool_use.py
+    │   ├── cems_pre_tool_use.py
+    │   ├── cems_stop.py
+    │   ├── cems_pre_compact.py
+    │   └── utils/
+    ├── skills/cems/
+    │   ├── recall.md
+    │   ├── remember.md
+    │   ├── share.md
+    │   ├── forget.md
+    │   ├── context.md
+    │   └── memory-guide.md
+    └── commands/
+        ├── recall.md
+        └── remember.md
+    ```
+  </Tab>
+  <Tab title="Cursor">
+    ```
+    ~/.cursor/
+    ├── mcp.json                # MCP server config (merged)
+    ├── hooks/
+    │   ├── cems_session_start.py
+    │   ├── cems_agent_response.py
+    │   └── cems_stop.py
+    └── skills/
+        ├── cems-recall/SKILL.md
+        ├── cems-remember/SKILL.md
+        ├── cems-forget/SKILL.md
+        ├── cems-share/SKILL.md
+        └── cems-context/SKILL.md
+    ```
+  </Tab>
+  <Tab title="Shared Config">
+    ```
+    ~/.cems/
+    ├── credentials      # API URL + key (chmod 600)
+    └── install.conf     # IDE choices for updates
+    ```
+  </Tab>
+</Tabs>
+
+## Updating CEMS
+
+CEMS auto-updates when you start a new Claude Code session (if >24 hours old).
+
+To update manually:
+
+```bash
+cems update          # Pull latest + re-deploy hooks/skills
+cems update --hooks  # Re-deploy hooks only (skip package upgrade)
+```
+
+<Note>
+  Auto-update can be disabled: `export CEMS_AUTO_UPDATE=0`
+</Note>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Memory not being recalled">
+    1. Check credentials: `cat ~/.cems/credentials`
+    2. Test connection: `cems health`
+    3. Test search: `cems search "test"`
+    4. Check hook output:
+       ```bash
+       echo '{"prompt": "test"}' | uv run ~/.claude/hooks/cems_user_prompts_submit.py
+       ```
+  </Accordion>
+
+  <Accordion title="Skills not appearing">
+    1. Verify files exist:
+       - Claude Code: `ls ~/.claude/skills/cems/`
+       - Cursor: `ls ~/.cursor/skills/cems-recall/`
+    2. Restart your IDE
+    3. Type `/` and look for `remember`, `recall`, etc.
+  </Accordion>
+
+  <Accordion title="Re-install hooks">
+    ```bash
+    cems setup    # Re-runs the full setup
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation Details" icon="book" href="/installation">
+    Learn about all installation methods and configuration options
+  </Card>
+  <Card title="Deploy Server" icon="server" href="/deployment/overview">
+    Set up CEMS server for your team
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore the full API and CLI
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/concepts/architecture">
+    Deep dive into how CEMS works
+  </Card>
+</CardGroup>

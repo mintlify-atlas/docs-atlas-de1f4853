@@ -1,0 +1,400 @@
+---
+title: Scheduled Maintenance
+description: Automatic memory optimization and cleanup jobs
+---
+
+CEMS runs scheduled maintenance jobs to keep your memory system optimized. These jobs run automatically via APScheduler, or you can trigger them manually.
+
+## Maintenance Jobs
+
+CEMS has four types of scheduled maintenance:
+
+<CardGroup cols={2}>
+  <Card title="Consolidation" icon="compress">
+    Nightly at 3 AM - Merges semantic duplicates
+  </Card>
+  <Card title="Reflection" icon="mirror">
+    Nightly at 3:30 AM - Condenses observations per project
+  </Card>
+  <Card title="Summarization" icon="list">
+    Weekly Sunday 4 AM - Compresses old memories
+  </Card>
+  <Card title="Re-indexing" icon="refresh">
+    Monthly 1st at 5 AM - Rebuilds embeddings
+  </Card>
+</CardGroup>
+
+---
+
+## Consolidation Job
+
+**Schedule:** Nightly at 3 AM  
+**Purpose:** Find and merge semantically duplicate memories using a three-tier approach.
+
+### How It Works
+
+Consolidation uses a tiered deduplication system:
+
+```python
+# From scheduler.py:56
+self._scheduler.add_job(
+    self._run_consolidation,
+    CronTrigger(hour=self.config.nightly_hour),
+    id="nightly_consolidation",
+    name="Nightly Consolidation",
+)
+```
+
+**Three-Tier Deduplication:**
+
+1. **Tier 1 (>= 0.98 similarity):** Auto-merge near-identical memories without LLM
+2. **Tier 2 (0.80-0.98 similarity):** LLM classifies as duplicate/related/conflicting/distinct
+3. **Tier 3 (< 0.80 similarity):** Skip - too different
+
+### What Gets Merged
+
+The consolidation job:
+- Processes last 7 days of memories by default (5000 document limit)
+- Pre-embeds all documents in batches to avoid N API round-trips
+- Uses vector search to find similar chunks
+- Merges duplicates using LLM content synthesis
+- Detects and logs conflicts between contradictory memories
+
+```python
+# From consolidation.py:169
+if score >= automerge_threshold:
+    logger.info(
+        f"Auto-merging {doc_id[:8]}+{chunk_doc_id[:8]} (score={score:.3f})"
+    )
+    merged_content = merge_memory_contents(
+        memories=[{"memory": content}, {"memory": dup_doc.get("content", "")}],
+        model=self.config.llm_model,
+    )
+```
+
+### Manual Trigger
+
+```bash
+# Run consolidation now
+cems maintenance --job consolidation
+
+# Full sweep (all documents, not just last 7 days)
+cems maintenance --job consolidation --full-sweep
+
+# Custom limits
+cems maintenance --job consolidation --limit 1000 --offset 0
+```
+
+---
+
+## Observation Reflection
+
+**Schedule:** Nightly at 3:30 AM (after consolidation)  
+**Purpose:** Consolidate overlapping observations per project.
+
+Inspired by Mastra's Reflector Agent, this job condenses redundant observations:
+
+```python
+# From scheduler.py:64
+self._scheduler.add_job(
+    self._run_reflection,
+    CronTrigger(hour=reflect_hour, minute=30),
+    id="nightly_reflection",
+    name="Nightly Observation Reflection",
+)
+```
+
+### How It Works
+
+1. **Fetch all observations** for each project (category="observation")
+2. **Group by source_ref** (project identifier)
+3. **Skip if < 10 observations** - not worth consolidating yet
+4. **Send to LLM** for re-synthesis into condensed set
+5. **Replace originals** - store consolidated observations, soft-delete originals
+
+```python
+# From observation_reflector.py:73
+if len(project_obs) < MIN_OBSERVATIONS_THRESHOLD:
+    total_after += len(project_obs)
+    continue
+
+consolidated = await asyncio.to_thread(
+    reflect_observations,
+    observations=project_obs,
+    project_context=project_context,
+)
+```
+
+### Safety Guards
+
+- **Sanity check:** Don't replace if LLM produces more observations than original
+- **Atomic replacement:** Only delete originals if ALL consolidated observations stored successfully
+- **Fallback:** Keep originals on any error to prevent data loss
+
+---
+
+## Summarization Job
+
+**Schedule:** Weekly on Sunday at 4 AM  
+**Purpose:** Compress old memories and prune stale ones.
+
+```python
+# From scheduler.py:72
+self._scheduler.add_job(
+    self._run_summarization,
+    CronTrigger(
+        day_of_week=self.config.weekly_day,
+        hour=self.config.weekly_hour,
+    ),
+    id="weekly_summarization",
+    name="Weekly Summarization",
+)
+```
+
+### Two-Phase Process
+
+**Phase 1: Compress by Category**
+
+- Find memories 30+ days old
+- Group by category
+- Generate LLM summary for categories with 3+ old memories
+- Store as new document with `category-summary` tag
+
+```python
+# From summarization.py:96
+for category, docs in categories.items():
+    if len(docs) >= 3:
+        summary_text = summarize_memories(
+            memories=contents,
+            category=category,
+            model=self.config.llm_model,
+        )
+        await self.memory.add_async(
+            content=summary_text,
+            category="category-summary",
+            tags=["category-summary", f"category:{category}"],
+        )
+```
+
+**Phase 2: Prune Stale Memories**
+
+- Soft-delete documents not updated in 90+ days (configurable via `stale_days`)
+- Preserves data via soft-delete (can be restored)
+
+---
+
+## Re-indexing Job
+
+**Schedule:** Monthly on 1st at 5 AM  
+**Purpose:** Rebuild embeddings with latest model and archive dead memories.
+
+```python
+# From scheduler.py:83
+self._scheduler.add_job(
+    self._run_reindex,
+    CronTrigger(
+        day=self.config.monthly_day,
+        hour=self.config.monthly_hour,
+    ),
+    id="monthly_reindex",
+    name="Monthly Re-indexing",
+)
+```
+
+### Two-Phase Process
+
+**Phase 1: Refresh Embeddings**
+
+- Fetch all documents (5000 limit)
+- Re-embed each with current embedding model
+- Replaces chunks in database with fresh embeddings
+- Progress logged every 10 documents
+
+```python
+# From reindex.py:77
+for doc in docs:
+    result = await self.memory.update_async(doc_id, content)
+    if result.get("success"):
+        refreshed += 1
+    if refreshed % log_interval == 0:
+        logger.info(f"Re-indexing progress: {refreshed}/{total} documents")
+```
+
+**Phase 2: Archive Dead Memories**
+
+- Soft-delete documents not updated in 180+ days (configurable via `archive_days`)
+- Preserves data via soft-delete
+
+---
+
+## Configuration
+
+Schedule configuration via environment variables:
+
+```bash
+# Nightly jobs (consolidation, reflection)
+CEMS_NIGHTLY_HOUR=3  # Default: 3 AM
+
+# Weekly job (summarization)
+CEMS_WEEKLY_DAY=0    # 0=Sunday, 1=Monday, etc.
+CEMS_WEEKLY_HOUR=4   # Default: 4 AM
+
+# Monthly job (re-indexing)
+CEMS_MONTHLY_DAY=1   # Default: 1st of month
+CEMS_MONTHLY_HOUR=5  # Default: 5 AM
+
+# Age thresholds
+CEMS_STALE_DAYS=90      # Prune memories not accessed in 90 days
+CEMS_ARCHIVE_DAYS=180   # Archive memories not updated in 180 days
+```
+
+### Deduplication Thresholds
+
+```bash
+# Consolidation similarity thresholds (cosine similarity 0-1)
+CEMS_DEDUP_AUTOMERGE_THRESHOLD=0.98  # Auto-merge without LLM
+CEMS_DEDUP_LLM_THRESHOLD=0.80        # Use LLM classification
+```
+
+---
+
+## Manual Triggers
+
+Run maintenance jobs on-demand:
+
+### CLI
+
+```bash
+# Run specific job
+cems maintenance --job consolidation
+cems maintenance --job summarization
+cems maintenance --job reindex
+cems maintenance --job reflect
+
+# Full sweep (all documents)
+cems maintenance --job consolidation --full-sweep
+
+# Custom pagination
+cems maintenance --job consolidation --limit 500 --offset 1000
+```
+
+### API
+
+```bash
+curl -X POST http://localhost:8765/api/memory/maintenance \
+  -H "Authorization: Bearer $CEMS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"job_type": "consolidation"}'
+```
+
+### MCP Tool
+
+```typescript
+await mcpClient.callTool("memory_maintenance", {
+  job_type: "consolidation"
+});
+```
+
+---
+
+## Monitoring
+
+Check scheduler status:
+
+```bash
+# View scheduled jobs
+cems status
+
+# API endpoint
+curl http://localhost:8765/api/memory/status \
+  -H "Authorization: Bearer $CEMS_API_KEY"
+```
+
+Scheduler returns job info:
+
+```json
+{
+  "jobs": [
+    {
+      "id": "nightly_consolidation",
+      "name": "Nightly Consolidation",
+      "next_run": "2026-02-29T03:00:00Z"
+    },
+    {
+      "id": "nightly_reflection",
+      "name": "Nightly Observation Reflection",
+      "next_run": "2026-02-29T03:30:00Z"
+    },
+    {
+      "id": "weekly_summarization",
+      "name": "Weekly Summarization",
+      "next_run": "2026-03-02T04:00:00Z"
+    },
+    {
+      "id": "monthly_reindex",
+      "name": "Monthly Re-indexing",
+      "next_run": "2026-03-01T05:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="When should I run manual maintenance?">
+    Run manual maintenance when:
+    - You've imported a large batch of memories
+    - You notice duplicate memories in search results
+    - After changing embedding models (run re-indexing)
+    - When testing deduplication thresholds
+  </Accordion>
+
+  <Accordion title="Will maintenance delete my data?">
+    No. All maintenance jobs use **soft-delete** by default:
+    - Memories are marked as deleted, not removed from database
+    - You can restore soft-deleted memories if needed
+    - Hard delete requires explicit `--hard` flag
+  </Accordion>
+
+  <Accordion title="How long does maintenance take?">
+    Depends on memory count:
+    - **Consolidation:** ~1-2 min for 1000 memories
+    - **Reflection:** ~30 sec per project with 10+ observations
+    - **Summarization:** ~1-2 min for 500 old memories
+    - **Re-indexing:** ~5-10 min for 5000 memories (embedding API calls)
+  </Accordion>
+
+  <Accordion title="Can I disable automatic maintenance?">
+    Yes, but not recommended. To disable:
+    ```python
+    # In server startup code
+    scheduler = create_scheduler(config)
+    # Don't call scheduler.start()
+    ```
+    
+    You'll need to run maintenance manually via CLI/API.
+  </Accordion>
+
+  <Accordion title="What happens if maintenance fails?">
+    - Errors are logged but don't crash the scheduler
+    - Partial failures are safe (atomic operations)
+    - Failed jobs will retry on next scheduled run
+    - Check logs in Docker: `docker compose logs cems-server`
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Retrieval Tuning" icon="sliders" href="/advanced/retrieval-tuning">
+    Optimize search parameters and modes
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/advanced/troubleshooting">
+    Debug common maintenance issues
+  </Card>
+</CardGroup>

@@ -1,0 +1,444 @@
+---
+title: "Goose Integration"
+description: "CEMS integration with Goose - MCP extension configuration"
+---
+
+## Overview
+
+Goose integrates with CEMS via a single MCP extension in `~/.config/goose/config.yaml`. No hooks or skills - just the MCP tools.
+
+## What Gets Installed
+
+When you run `cems setup --goose`, the installer adds an MCP extension block to your Goose config:
+
+```
+~/.config/goose/
+└── config.yaml             # CEMS MCP extension block (merged)
+```
+
+### Shared Configuration
+
+```
+~/.cems/
+├── credentials             # API URL + key (chmod 600)
+└── install.conf            # IDE choices for cems update
+```
+
+## MCP Configuration
+
+The installer merges this block into `~/.config/goose/config.yaml`:
+
+```yaml
+# CEMS Memory extension for Goose
+# Added by: cems setup --goose
+cems:
+  name: CEMS Memory
+  description: Long-term memory system for search, store, and manage memories
+  cmd: cems-mcp
+  args: []
+  enabled: true
+  type: stdio
+  timeout: 300
+  envs:
+    CEMS_API_URL: "https://your-server.com"
+```
+
+**Note:** `CEMS_API_KEY` is read from the environment variable, not embedded in the config file.
+
+## Prerequisites
+
+1. **Install CEMS CLI:**
+   ```bash
+   pip install cems
+   # or
+   uv tool install cems
+   ```
+
+2. **Set API key environment variable:**
+   ```bash
+   export CEMS_API_KEY="cems_usr_your_key_here"
+   ```
+
+   Add to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to persist.
+
+3. **Run Goose:**
+   ```bash
+   goose
+   ```
+
+   Goose will automatically load the CEMS extension and connect to the MCP server.
+
+## MCP Tools Available
+
+CEMS exposes these tools to Goose:
+
+### memory_search
+
+**Purpose:** Search memories with semantic retrieval, graph traversal, and time decay
+
+**Usage:**
+```python
+# Goose will invoke this when you ask to recall something
+result = memory_search(
+    query="authentication patterns in this project",
+    scope="both",
+    max_results=10,
+    max_tokens=4000,
+    enable_graph=True,
+    enable_query_synthesis=True,
+    project="org/repo"  # Auto-detect from git remote
+)
+```
+
+**Parameters:**
+- `query` (required) - Natural language search query
+- `scope` (default: "both") - `"personal"`, `"shared"`, or `"both"`
+- `max_results` (default: 10) - Maximum results (1-20)
+- `max_tokens` (default: 4000) - Token budget for results
+- `enable_graph` (default: true) - Include related memories via graph traversal
+- `enable_query_synthesis` (default: true) - Expand query with LLM for better retrieval
+- `project` (optional) - Project ID (org/repo) for scoped boosting
+- `raw` (default: false) - Debug mode: bypass relevance filtering
+
+**Returns:**
+```json
+{
+  "success": true,
+  "results": [
+    {
+      "memory_id": "abc12345",
+      "content": "Deployment uses Coolify with Docker Compose",
+      "category": "workflow",
+      "tags": ["deployment", "docker"],
+      "score": 0.87,
+      "truncated": false
+    }
+  ]
+}
+```
+
+### memory_add
+
+**Purpose:** Store a memory (personal or shared scope)
+
+**Usage:**
+```python
+# Goose will invoke this when you say "remember this"
+result = memory_add(
+    content="Deployment uses Coolify with Docker Compose",
+    scope="personal",
+    category="workflow",
+    tags=["deployment", "docker"],
+    source_ref="project:org/repo"
+)
+```
+
+**Parameters:**
+- `content` (required) - Memory content
+- `scope` (default: "personal") - `"personal"` or `"shared"`
+- `category` (default: "general") - `preferences`, `conventions`, `architecture`, `decisions`, `workflow`, `errors`, `learnings`, or `general`
+- `tags` (optional) - Array of tags
+- `source_ref` (optional) - Source reference (e.g., `"project:org/repo"`)
+- `priority` (default: 5) - Priority (0-10)
+
+**Returns:**
+```json
+{
+  "success": true,
+  "memory_id": "abc12345"
+}
+```
+
+### memory_get
+
+**Purpose:** Fetch full memory by ID (for truncated search results)
+
+**Usage:**
+```python
+result = memory_get(memory_id="abc12345")
+```
+
+**Returns:**
+```json
+{
+  "success": true,
+  "memory": {
+    "id": "abc12345",
+    "content": "Full content here...",
+    "category": "workflow",
+    "tags": ["deployment"],
+    "created_at": "2026-02-20T10:30:00Z",
+    "updated_at": "2026-02-28T15:00:00Z"
+  }
+}
+```
+
+### memory_forget
+
+**Purpose:** Archive or permanently delete a memory
+
+**Usage:**
+```python
+result = memory_forget(memory_id="abc12345", hard_delete=False)
+```
+
+**Parameters:**
+- `memory_id` (required) - Memory ID
+- `hard_delete` (default: false) - Permanent deletion vs soft delete
+
+### memory_update
+
+**Purpose:** Update an existing memory's content
+
+**Usage:**
+```python
+result = memory_update(
+    memory_id="abc12345",
+    content="Updated content here"
+)
+```
+
+### memory_maintenance
+
+**Purpose:** Run consolidation, summarization, or reindex jobs
+
+**Usage:**
+```python
+result = memory_maintenance(job="consolidation")
+```
+
+**Jobs:**
+- `consolidation` - Merge semantic duplicates
+- `summarization` - Compress old memories
+- `reindex` - Rebuild embeddings
+
+## Setup Verification
+
+### 1. Check config file
+
+```bash
+cat ~/.config/goose/config.yaml | grep -A 10 "cems:"
+```
+
+Should show the CEMS extension block.
+
+### 2. Check credentials
+
+```bash
+cat ~/.cems/credentials
+```
+
+Should show:
+```
+CEMS_API_URL=https://your-server.com
+CEMS_API_KEY=cems_usr_...
+```
+
+### 3. Check API key environment variable
+
+```bash
+echo $CEMS_API_KEY
+```
+
+Should print your API key.
+
+### 4. Test MCP server
+
+```bash
+cems-mcp
+```
+
+Should start the MCP server in stdio mode. Press Ctrl+C to exit.
+
+### 5. Test in Goose
+
+Start Goose and ask:
+```
+Search my memories for "deployment"
+```
+
+Goose should invoke the `memory_search` tool and display results.
+
+## How It Works
+
+### User asks to recall something
+
+1. User: "What do we know about deployment?"
+2. Goose detects the recall intent
+3. Goose invokes `memory_search` MCP tool with query="deployment"
+4. CEMS server searches memories
+5. Results returned to Goose
+6. Goose displays results to user
+
+### User asks to remember something
+
+1. User: "Remember that we deploy via Coolify"
+2. Goose detects the remember intent
+3. Goose invokes `memory_add` MCP tool with content="We deploy via Coolify"
+4. CEMS server stores the memory
+5. Confirmation returned to Goose
+6. Goose displays confirmation to user
+
+## Project-Scoped Search
+
+Goose should auto-detect the project from git remote when calling `memory_search`:
+
+```python
+import subprocess
+import re
+
+def get_project_id(cwd: str) -> str | None:
+    """Extract project ID from git remote (e.g., 'org/repo')."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0:
+            url = result.stdout.strip()
+            if url.startswith("git@"):
+                match = re.search(r":(.+?)(?:\.git)?$", url)
+            else:
+                match = re.search(r"[:/]([^/]+/[^/]+?)(?:\.git)?$", url)
+            if match:
+                return match.group(1).removesuffix('.git')
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+# When calling memory_search:
+project = get_project_id(os.getcwd())
+result = memory_search(
+    query="deployment patterns",
+    project=project  # Boosts same-project memories
+)
+```
+
+## Troubleshooting
+
+### CEMS extension not loaded
+
+1. Check config: `cat ~/.config/goose/config.yaml | grep cems`
+2. Verify `cems-mcp` is in PATH: `which cems-mcp`
+3. Install if missing: `pip install cems` or `uv tool install cems`
+4. Restart Goose
+
+### API key not found
+
+1. Check environment variable: `echo $CEMS_API_KEY`
+2. Set if missing: `export CEMS_API_KEY="cems_usr_..."`
+3. Add to shell profile to persist
+4. Restart Goose
+
+### MCP connection failed
+
+1. Test `cems-mcp` manually: `cems-mcp`
+2. Check credentials: `cat ~/.cems/credentials`
+3. Test connection: `cems health`
+4. Check server logs if self-hosting
+
+### No search results
+
+1. Test CLI: `cems search "test query"`
+2. Check server connection: `cems health`
+3. Verify credentials: `cat ~/.cems/credentials`
+4. Check server logs if self-hosting
+
+## Advanced Configuration
+
+### Custom timeout
+
+Edit `~/.config/goose/config.yaml`:
+```yaml
+cems:
+  timeout: 600  # 10 minutes for very large queries
+```
+
+### Self-hosted server
+
+Edit `~/.config/goose/config.yaml`:
+```yaml
+cems:
+  envs:
+    CEMS_API_URL: "https://your-server.com"
+```
+
+And set API key:
+```bash
+export CEMS_API_KEY="cems_usr_..."
+```
+
+### Team memory
+
+If your server supports team memory, add team header:
+```yaml
+cems:
+  envs:
+    CEMS_API_URL: "https://your-server.com"
+    CEMS_TEAM_ID: "your-team-name"
+```
+
+## Differences from Other IDEs
+
+Goose has the simplest integration:
+
+| Feature | Claude Code | Cursor | Codex | Goose |
+|---------|------------|--------|-------|-------|
+| Hooks | 6 | 3 | 0 | 0 |
+| Skills | 6 | 5 | 2 | 0 |
+| Commands | 2 | 0 | 3 | 0 |
+| MCP tools | Yes | Yes | Yes | Yes |
+| Auto context | Yes | Hook-based | No | No |
+| Observer | Yes | Yes | No | No |
+
+**Why?** Goose relies on the agent to proactively use MCP tools when needed, rather than automatic injection.
+
+## Example Workflows
+
+### Search before coding
+
+User: "I need to add authentication to the API. What have we done before?"
+
+Goose:
+1. Detects recall intent
+2. Calls `memory_search(query="authentication API patterns", project="org/repo")`
+3. Displays results:
+   ```
+   Found 3 memories:
+
+   1. [architecture] We use JWT tokens with 24h expiration
+   2. [conventions] Auth middleware checks tokens before all /api/* routes
+   3. [decisions] Refresh tokens stored in httpOnly cookies
+   ```
+4. Uses memories to guide implementation
+
+### Store discovery
+
+User: "Remember that we deploy to production every Friday at 3pm"
+
+Goose:
+1. Detects remember intent
+2. Detects project from git remote
+3. Calls `memory_add(content="Deploy to production every Friday at 3pm", category="workflow", source_ref="project:org/repo")`
+4. Displays confirmation:
+   ```
+   ✓ Memory stored (id: abc12345)
+   Category: workflow
+   Project: org/repo
+   ```
+
+### Update stale memory
+
+User: "We changed deployment to Mondays. Update the memory."
+
+Goose:
+1. Searches for deployment memory: `memory_search(query="deployment schedule")`
+2. Finds memory ID: `abc12345`
+3. Updates: `memory_update(memory_id="abc12345", content="Deploy to production every Monday at 3pm")`
+4. Confirms update
+
+## Next Steps
+
+- [Claude Code Integration](/integrations/claude-code) - Full hook-based integration
+- [Cursor Integration](/integrations/cursor) - MCP + hooks + skills
+- [Codex Integration](/integrations/codex) - Command-based interface

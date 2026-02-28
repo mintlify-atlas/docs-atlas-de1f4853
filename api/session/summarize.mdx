@@ -1,0 +1,134 @@
+---
+title: "Session Summarize"
+description: "Produce and store session summaries via the observer daemon"
+---
+
+## Overview
+
+The session summarize endpoint produces and stores session summaries using an upsert model where ONE document exists per session. If the daemon already created an incremental summary, subsequent calls UPDATE it rather than creating duplicates.
+
+## Endpoint
+
+<ParamField path="method" type="string">
+  POST
+</ParamField>
+
+<ParamField path="path" type="string">
+  /api/session/summarize
+</ParamField>
+
+<ParamField path="authentication" type="string">
+  API Key required
+</ParamField>
+
+## Request Body
+
+<ParamField body="content" type="string" required>
+  Session transcript text to summarize. Content is capped at 50,000 characters to prevent OOM. If exceeded, the middle portion is truncated.
+</ParamField>
+
+<ParamField body="session_id" type="string" required>
+  Session identifier used to create the session tag (e.g., `session:{id[:12]}`)
+</ParamField>
+
+<ParamField body="source_ref" type="string">
+  Project reference for tagging (e.g., `project:org/repo`)
+</ParamField>
+
+<ParamField body="project_context" type="string">
+  Human-readable project context for LLM prompt (e.g., `org/repo (main)`)
+</ParamField>
+
+<ParamField body="mode" type="string" default="incremental">
+  Summary mode:
+  - `incremental`: Daemon-generated incremental summary (appends to existing)
+  - `finalize`: Stop hook comprehensive final version (replaces existing)
+</ParamField>
+
+<ParamField body="epoch" type="integer" default="0">
+  Session epoch number. For epoch > 0, the session tag becomes `session:{id[:12]}:e{N}`
+</ParamField>
+
+<ParamField body="session_tag" type="string">
+  Custom session tag. If not provided, automatically generated from session_id and epoch
+</ParamField>
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Indicates if the operation was successful
+</ResponseField>
+
+<ResponseField name="document_id" type="string">
+  ID of the created or updated document. Null if skipped.
+</ResponseField>
+
+<ResponseField name="title" type="string">
+  Generated title in format: `Session: {date} - {project} - {title} (epoch {N})`
+</ResponseField>
+
+<ResponseField name="action" type="string">
+  Action taken: `created`, `updated`, or null if skipped
+</ResponseField>
+
+<ResponseField name="skipped_reason" type="string">
+  Reason for skipping (if applicable):
+  - `extraction_produced_no_summary`: LLM returned no summary
+  - `chunking_produced_no_output`: Chunking failed
+</ResponseField>
+
+## Behavior
+
+### Incremental Mode
+In incremental mode, existing summaries are appended to with a separator (`\n\n---\n\n`). The stored summary is capped at 10,000 characters to prevent unbounded growth. When exceeded, the tail (most recent summaries) is kept.
+
+### Finalize Mode
+The stop hook sends `mode="finalize"` to replace the incremental summary with a comprehensive final version.
+
+### Tagging
+Documents are tagged with:
+- `session-summary` (category)
+- Priority tag from LLM extraction (default: `medium`)
+- Session tag (`session:{id[:12]}` or `session:{id[:12]}:e{N}`)
+- Additional tags from LLM extraction
+
+<RequestExample>
+
+```bash cURL
+curl -X POST https://api.cems.dev/api/session/summarize \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "User asked about implementing authentication. Assistant helped configure OAuth2 with JWT tokens...",
+    "session_id": "abc123def456",
+    "source_ref": "project:acme/webapp",
+    "project_context": "acme/webapp (main)",
+    "mode": "incremental",
+    "epoch": 0
+  }'
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```json 200 OK
+{
+  "success": true,
+  "document_id": "doc_abc123",
+  "title": "Session: 2026-02-28 - acme/webapp - OAuth2 Implementation",
+  "action": "created"
+}
+```
+
+```json Skipped (No Summary)
+{
+  "success": true,
+  "document_id": null,
+  "title": null,
+  "action": null,
+  "skipped_reason": "extraction_produced_no_summary"
+}
+```
+
+</ResponseExample>

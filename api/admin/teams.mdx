@@ -1,0 +1,257 @@
+---
+title: Team Management
+description: Admin endpoints for creating and managing teams and team memberships
+---
+
+All admin endpoints require authentication via the `CEMS_ADMIN_KEY` environment variable.
+
+## Authentication
+
+Include the admin key in the `Authorization` header:
+
+```bash
+Authorization: Bearer <CEMS_ADMIN_KEY>
+```
+
+## Create Team
+
+<RequestExample>
+```bash
+POST /admin/teams
+Authorization: Bearer <CEMS_ADMIN_KEY>
+Content-Type: application/json
+
+{
+  "name": "engineering",
+  "company_id": "acme-corp",
+  "settings": {}
+}
+```
+</RequestExample>
+
+<ParamField body="name" type="string" required>
+  Unique team name
+</ParamField>
+
+<ParamField body="company_id" type="string" required>
+  Company identifier for the team
+</ParamField>
+
+<ParamField body="settings" type="object" default="{}">
+  Optional team settings dictionary
+</ParamField>
+
+<ResponseField name="team" type="object">
+  Created team details
+  <Expandable>
+    <ResponseField name="id" type="string">
+      Team UUID
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      Team name
+    </ResponseField>
+    <ResponseField name="company_id" type="string">
+      Company identifier
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Success message
+</ResponseField>
+
+<ResponseExample>
+```json
+{
+  "team": {
+    "id": "650e8400-e29b-41d4-a716-446655440001",
+    "name": "engineering",
+    "company_id": "acme-corp"
+  },
+  "message": "Team created"
+}
+```
+</ResponseExample>
+
+## List Teams
+
+<RequestExample>
+```bash
+GET /admin/teams?limit=100&offset=0
+Authorization: Bearer <CEMS_ADMIN_KEY>
+```
+</RequestExample>
+
+<ParamField query="limit" type="integer" default="100">
+  Maximum number of teams to return
+</ParamField>
+
+<ParamField query="offset" type="integer" default="0">
+  Offset for pagination
+</ParamField>
+
+<ResponseField name="teams" type="array">
+  List of team objects
+  <Expandable>
+    <ResponseField name="id" type="string">
+      Team UUID
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      Team name
+    </ResponseField>
+    <ResponseField name="company_id" type="string">
+      Company identifier
+    </ResponseField>
+    <ResponseField name="created_at" type="string">
+      ISO 8601 timestamp
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="count" type="integer">
+  Number of teams returned
+</ResponseField>
+
+## Get Team
+
+<RequestExample>
+```bash
+GET /admin/teams/{team_id}
+Authorization: Bearer <CEMS_ADMIN_KEY>
+```
+</RequestExample>
+
+<ParamField path="team_id" type="string" required>
+  Team UUID or team name
+</ParamField>
+
+<ResponseExample>
+```json
+{
+  "id": "650e8400-e29b-41d4-a716-446655440001",
+  "name": "engineering",
+  "company_id": "acme-corp",
+  "created_at": "2024-01-10T08:00:00Z",
+  "settings": {},
+  "members": [
+    {
+      "user_id": "550e8400-e29b-41d4-a716-446655440000",
+      "username": "alice",
+      "role": "admin",
+      "joined_at": "2024-01-10T08:05:00Z"
+    },
+    {
+      "user_id": "550e8400-e29b-41d4-a716-446655440002",
+      "username": "bob",
+      "role": "member",
+      "joined_at": "2024-01-11T09:30:00Z"
+    }
+  ]
+}
+```
+</ResponseExample>
+
+## Delete Team
+
+<RequestExample>
+```bash
+DELETE /admin/teams/{team_id}
+Authorization: Bearer <CEMS_ADMIN_KEY>
+```
+</RequestExample>
+
+<ParamField path="team_id" type="string" required>
+  Team UUID or team name
+</ParamField>
+
+<ResponseExample>
+```json
+{
+  "message": "Team deleted"
+}
+```
+</ResponseExample>
+
+## Add Team Member
+
+<RequestExample>
+```bash
+POST /admin/teams/{team_id}/members
+Authorization: Bearer <CEMS_ADMIN_KEY>
+Content-Type: application/json
+
+{
+  "user_id": "alice",
+  "role": "member"
+}
+```
+</RequestExample>
+
+<ParamField path="team_id" type="string" required>
+  Team UUID or team name
+</ParamField>
+
+<ParamField body="user_id" type="string" required>
+  User UUID or username to add
+</ParamField>
+
+<ParamField body="role" type="string" default="member">
+  Member role: `admin`, `member`, or `viewer`
+</ParamField>
+
+<ResponseField name="member" type="object">
+  Created membership details
+  <Expandable>
+    <ResponseField name="team_id" type="string">
+      Team UUID
+    </ResponseField>
+    <ResponseField name="user_id" type="string">
+      User UUID
+    </ResponseField>
+    <ResponseField name="role" type="string">
+      Member role
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Success message
+</ResponseField>
+
+<ResponseExample>
+```json
+{
+  "member": {
+    "team_id": "650e8400-e29b-41d4-a716-446655440001",
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "role": "member"
+  },
+  "message": "Member added"
+}
+```
+</ResponseExample>
+
+## Remove Team Member
+
+<RequestExample>
+```bash
+DELETE /admin/teams/{team_id}/members/{user_id}
+Authorization: Bearer <CEMS_ADMIN_KEY>
+```
+</RequestExample>
+
+<ParamField path="team_id" type="string" required>
+  Team UUID or team name
+</ParamField>
+
+<ParamField path="user_id" type="string" required>
+  User UUID or username to remove
+</ParamField>
+
+<ResponseExample>
+```json
+{
+  "message": "Member removed"
+}
+```
+</ResponseExample>

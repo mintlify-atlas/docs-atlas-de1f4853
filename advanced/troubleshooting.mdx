@@ -1,0 +1,836 @@
+---
+title: Troubleshooting
+description: Debug common issues with CEMS installation and operation
+---
+
+Common issues and solutions for CEMS deployment, hooks, skills, and search.
+
+## Quick Diagnostics
+
+Start with these commands to identify the issue:
+
+```bash
+# Check CEMS CLI version
+cems --version
+
+# Test server connection
+cems health
+
+# Verify credentials
+cat ~/.cems/credentials
+
+# Check which IDEs are configured
+cat ~/.cems/install.conf
+
+# Test memory operations
+cems add "test memory"
+cems search "test"
+```
+
+---
+
+## Installation Issues
+
+### CEMS CLI not found
+
+**Symptoms:** `cems: command not found`
+
+**Causes:**
+- `uv` not installed
+- CEMS not installed via `uv tool install`
+- Shell PATH not updated
+
+**Fix:**
+
+<Steps>
+  <Step title="Install uv if missing">
+    ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    ```
+  </Step>
+  
+  <Step title="Install CEMS CLI">
+    ```bash
+    uv tool install cems
+    ```
+  </Step>
+  
+  <Step title="Update shell PATH">
+    Add to `~/.bashrc` or `~/.zshrc`:
+    ```bash
+    export PATH="$HOME/.local/bin:$PATH"
+    ```
+    
+    Then reload:
+    ```bash
+    source ~/.bashrc  # or ~/.zshrc
+    ```
+  </Step>
+  
+  <Step title="Verify installation">
+    ```bash
+    cems --version
+    ```
+  </Step>
+</Steps>
+
+### Installation script fails
+
+**Symptoms:** `install.sh` exits with error
+
+**Common errors:**
+
+<AccordionGroup>
+  <Accordion title="Permission denied">
+    **Error:** `chmod: cannot access '~/.cems/credentials': Permission denied`
+    
+    **Fix:**
+    ```bash
+    sudo chown -R $USER:$USER ~/.cems
+    chmod 700 ~/.cems
+    chmod 600 ~/.cems/credentials
+    ```
+  </Accordion>
+
+  <Accordion title="Missing API URL or key">
+    **Error:** `CEMS_API_URL or CEMS_API_KEY not set`
+    
+    **Fix:**
+    Set environment variables before install:
+    ```bash
+    export CEMS_API_URL=https://cems.example.com
+    export CEMS_API_KEY=cems_usr_...
+    ./install.sh
+    ```
+  </Accordion>
+
+  <Accordion title="IDE not found">
+    **Error:** `Claude Code directory not found: ~/.claude`
+    
+    **Fix:**
+    Only install for IDEs you have:
+    ```bash
+    # Skip Claude Code, only install Cursor
+    ./install.sh --cursor
+    
+    # Or use interactive mode
+    ./install.sh
+    # Choose only installed IDEs when prompted
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Connection Issues
+
+### Memory not being recalled
+
+**Symptoms:** `/recall` returns empty or hook doesn't inject memories
+
+**Debug steps:**
+
+<Steps>
+  <Step title="Check credentials">
+    ```bash
+    cat ~/.cems/credentials
+    # Should contain:
+    # CEMS_API_URL=https://...
+    # CEMS_API_KEY=cems_usr_...
+    ```
+  </Step>
+  
+  <Step title="Test connection">
+    ```bash
+    cems health
+    # Should return: {"status": "healthy", ...}
+    ```
+    
+    If fails:
+    - Check API URL is reachable: `curl $CEMS_API_URL/health`
+    - Check API key is valid
+    - Check firewall/network
+  </Step>
+  
+  <Step title="Test search directly">
+    ```bash
+    cems search "test"
+    ```
+    
+    If returns results, issue is in hook integration (see [Skills Not Appearing](#skills-not-appearing)).
+  </Step>
+  
+  <Step title="Check hook output (Claude Code)">
+    ```bash
+    echo '{"prompt": "test"}' | uv run ~/.claude/hooks/cems_user_prompts_submit.py
+    ```
+    
+    Should return JSON with memories. If error:
+    - Check Python environment: `uv python --version`
+    - Check hook file exists: `ls ~/.claude/hooks/cems_*.py`
+    - Check hook logs in Claude Code output panel
+  </Step>
+</Steps>
+
+### 401 Unauthorized
+
+**Symptoms:** API returns `{"detail": "Invalid API key"}`
+
+**Causes:**
+- Expired or invalid API key
+- Wrong API URL
+- Credentials file not loaded
+
+**Fix:**
+
+```bash
+# Verify credentials file
+cat ~/.cems/credentials
+
+# Test with explicit credentials
+cems health \
+  --api-url https://cems.example.com \
+  --api-key cems_usr_YOUR_KEY
+
+# If works, credentials file is wrong - regenerate:
+rm ~/.cems/credentials
+cems setup  # Re-run setup
+
+# Or get new API key from admin:
+# (Admin runs:)
+curl -X POST http://localhost:8765/admin/users/USER_ID/reset-key \
+  -H "Authorization: Bearer $CEMS_ADMIN_KEY"
+```
+
+### Connection timeout
+
+**Symptoms:** `Connection timed out` or `Connection refused`
+
+**Causes:**
+- Server not running
+- Firewall blocking port
+- Wrong API URL
+
+**Fix:**
+
+<Tabs>
+  <Tab title="Local Server">
+    ```bash
+    # Check server is running
+    docker compose ps
+    # Should show cems-server on port 8765
+    
+    # If not running:
+    docker compose up -d
+    
+    # Check logs
+    docker compose logs cems-server
+    
+    # Test direct connection
+    curl http://localhost:8765/health
+    ```
+  </Tab>
+  
+  <Tab title="Remote Server">
+    ```bash
+    # Check firewall
+    sudo ufw status
+    # Port 8765 should be open
+    
+    # Test from local machine
+    curl https://cems.example.com/health
+    
+    # If fails, check reverse proxy (nginx/caddy)
+    # Check SSL certificate
+    # Check DNS resolution
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Hook Issues
+
+### Skills not appearing
+
+**Symptoms:** `/recall` and `/remember` skills don't show in IDE
+
+**Fix for each IDE:**
+
+<Tabs>
+  <Tab title="Claude Code">
+    1. **Verify files exist:**
+       ```bash
+       ls ~/.claude/skills/cems/
+       # Should show: recall.md, remember.md, share.md, etc.
+       ```
+    
+    2. **Check settings.json:**
+       ```bash
+       cat ~/.claude/settings.json | grep cems
+       # Should show hooks and skills config
+       ```
+    
+    3. **Re-install skills:**
+       ```bash
+       cems setup --claude
+       ```
+    
+    4. **Restart Claude Code:**
+       Close and reopen Claude Code application
+    
+    5. **Test manually:**
+       Type `/` in chat - should see `/recall`, `/remember`, etc.
+  </Tab>
+  
+  <Tab title="Cursor">
+    1. **Verify files exist:**
+       ```bash
+       ls ~/.cursor/skills/
+       # Should show: cems-recall/, cems-remember/, etc.
+       ```
+    
+    2. **Check MCP config:**
+       ```bash
+       cat ~/.cursor/mcp.json
+       # Should show CEMS MCP server config
+       ```
+    
+    3. **Re-install:**
+       ```bash
+       cems setup --cursor
+       ```
+    
+    4. **Restart Cursor**
+  </Tab>
+  
+  <Tab title="Codex">
+    1. **Verify files exist:**
+       ```bash
+       ls ~/.codex/commands/
+       # Should show: recall.md, remember.md
+       ls ~/.codex/skills/
+       # Should show: recall/, remember/
+       ```
+    
+    2. **Check MCP config:**
+       ```bash
+       cat ~/.codex/config.toml | grep cems
+       ```
+    
+    3. **Re-install:**
+       ```bash
+       cems setup --codex
+       ```
+  </Tab>
+</Tabs>
+
+### Hook execution fails
+
+**Symptoms:** Hook runs but returns error
+
+**Debug:**
+
+```bash
+# Test hook directly (Claude Code)
+echo '{"prompt": "what is my Python version?"}' | \
+  uv run ~/.claude/hooks/cems_user_prompts_submit.py
+
+# Check Python environment
+uv python --version
+
+# Check dependencies
+uv pip list | grep cems
+
+# Re-install CEMS package
+uv tool install --force cems
+
+# Check hook logs
+# Claude Code: Output panel → CEMS
+# Cursor: Developer Tools → Console
+```
+
+**Common errors:**
+
+<AccordionGroup>
+  <Accordion title="ModuleNotFoundError: No module named 'cems'">
+    **Cause:** CEMS package not installed in Python environment
+    
+    **Fix:**
+    ```bash
+    uv tool install --force cems
+    ```
+  </Accordion>
+
+  <Accordion title="JSONDecodeError: Expecting value">
+    **Cause:** Hook returned invalid JSON
+    
+    **Fix:**
+    Check hook output:
+    ```bash
+    ~/.claude/hooks/cems_user_prompts_submit.py <<< '{"prompt":"test"}' 2>&1
+    ```
+    
+    Look for print statements or errors before JSON output.
+  </Accordion>
+
+  <Accordion title="ConnectionError: Failed to connect to API">
+    **Cause:** CEMS server unreachable from hook
+    
+    **Fix:**
+    1. Check credentials file exists: `cat ~/.cems/credentials`
+    2. Test connection: `cems health`
+    3. Check network/firewall
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Search Issues
+
+### Poor search results
+
+**Symptoms:** Relevant memories not returned or irrelevant results returned
+
+**Diagnosis:**
+
+<Steps>
+  <Step title="Check if memories exist">
+    ```bash
+    cems list | grep "keyword"
+    ```
+    
+    If missing, memories weren't stored. Check:
+    - `/remember` skill works: `cems add "test memory"`
+    - Observer daemon running (for automatic extraction)
+  </Step>
+  
+  <Step title="Test with raw mode">
+    ```bash
+    cems search "your query" --raw
+    ```
+    
+    Raw mode bypasses relevance filtering. If results appear:
+    - Memories exist but filtered out (score too low)
+    - Adjust threshold or use hybrid mode
+  </Step>
+  
+  <Step title="Try hybrid mode">
+    ```bash
+    cems search "your query" --mode hybrid
+    ```
+    
+    Hybrid mode uses:
+    - Query synthesis (2-5 expanded queries)
+    - HyDE (hypothetical document embeddings)
+    - RRF fusion (combines vector + full-text)
+    - Better for complex/semantic queries
+  </Step>
+  
+  <Step title="Check scoring adjustments">
+    Recent memories score higher (time decay). Check last access:
+    ```bash
+    cems list --sort last_accessed
+    ```
+    
+    Pin important memories:
+    ```bash
+    cems pin <memory_id>
+    ```
+  </Step>
+</Steps>
+
+### Search returns empty
+
+**Symptoms:** `cems search` returns `[]` even though memories exist
+
+**Causes:**
+
+<AccordionGroup>
+  <Accordion title="No embeddings generated">
+    **Symptom:** `cems list` shows memories but search returns empty
+    
+    **Cause:** Embeddings not generated (API key issue or embedder failure)
+    
+    **Fix:**
+    1. Check OpenRouter API key:
+       ```bash
+       docker compose logs cems-server | grep OPENROUTER
+       ```
+    2. Re-index memories:
+       ```bash
+       cems maintenance --job reindex
+       ```
+    3. Check embedding backend config:
+       ```bash
+       docker compose logs cems-server | grep embedding
+       ```
+  </Accordion>
+
+  <Accordion title="Scope mismatch">
+    **Symptom:** Memories stored in `personal` but searching `shared`
+    
+    **Fix:**
+    ```bash
+    # Search both scopes
+    cems search "query" --scope both
+    
+    # Or check which scope memories are in:
+    cems list | grep scope
+    ```
+  </Accordion>
+
+  <Accordion title="Project filter too strict">
+    **Symptom:** Searching with `--project` returns empty
+    
+    **Cause:** Memories not tagged with project
+    
+    **Fix:**
+    1. Search without project filter:
+       ```bash
+       cems search "query"  # no --project
+       ```
+    2. Check memory source_ref:
+       ```bash
+       cems list | grep source_ref
+       ```
+    3. Disable project penalty:
+       ```bash
+       export CEMS_ENABLE_PROJECT_PENALTY=false
+       cems search "query"
+       ```
+  </Accordion>
+</AccordionGroup>
+
+### Query synthesis fails
+
+**Symptoms:** Hybrid mode falls back to vector mode
+
+**Cause:** LLM API error or timeout
+
+**Debug:**
+
+```bash
+# Check server logs
+docker compose logs cems-server | grep "query synthesis"
+
+# Common errors:
+# - OpenRouter API key invalid
+# - Rate limit exceeded
+# - Model unavailable
+
+# Fix: Check OpenRouter dashboard
+# https://openrouter.ai/activity
+
+# Test LLM manually:
+curl https://openrouter.ai/api/v1/chat/completions \
+  -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "test"}]
+  }'
+```
+
+---
+
+## Server Issues
+
+### Docker container won't start
+
+**Symptoms:** `docker compose up -d` fails or containers crash
+
+**Debug:**
+
+```bash
+# Check container status
+docker compose ps
+
+# Check logs for errors
+docker compose logs cems-server
+docker compose logs postgres
+docker compose logs cems-mcp
+
+# Common issues:
+```
+
+<AccordionGroup>
+  <Accordion title="Port already in use">
+    **Error:** `Error starting userland proxy: listen tcp4 0.0.0.0:8765: bind: address already in use`
+    
+    **Fix:**
+    ```bash
+    # Find process using port
+    sudo lsof -i :8765
+    
+    # Kill process or change port in docker-compose.yml:
+    ports:
+      - "8766:8765"  # Map host 8766 to container 8765
+    ```
+  </Accordion>
+
+  <Accordion title="Missing environment variables">
+    **Error:** `OPENROUTER_API_KEY is required`
+    
+    **Fix:**
+    ```bash
+    # Check .env file exists
+    cat .env
+    
+    # If missing:
+    cp .env.example .env
+    nano .env  # Add OPENROUTER_API_KEY
+    
+    # Restart
+    docker compose down
+    docker compose up -d
+    ```
+  </Accordion>
+
+  <Accordion title="Database connection failed">
+    **Error:** `could not connect to server: Connection refused`
+    
+    **Fix:**
+    ```bash
+    # Check postgres is running
+    docker compose ps postgres
+    
+    # If not running:
+    docker compose up -d postgres
+    
+    # Check logs
+    docker compose logs postgres
+    
+    # Wait for postgres to be ready (can take 10-30 seconds)
+    docker compose logs -f postgres | grep "ready to accept connections"
+    
+    # Then restart cems-server
+    docker compose restart cems-server
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Database migration issues
+
+**Symptoms:** Server starts but API returns errors about missing tables
+
+**Fix:**
+
+```bash
+# Check if migrations ran
+docker compose logs cems-server | grep migration
+
+# Run migrations manually
+docker compose exec cems-server python -m cems.db.migrate
+
+# If fails, check database connection:
+docker compose exec postgres psql -U cems -d cems -c '\dt'
+# Should show tables: users, teams, memory_documents, memory_chunks, etc.
+```
+
+---
+
+## Maintenance Issues
+
+### Consolidation merging too aggressively
+
+**Symptoms:** Distinct memories being merged into one
+
+**Cause:** Deduplication threshold too low
+
+**Fix:**
+
+```bash
+# Increase thresholds (more conservative)
+export CEMS_DEDUP_AUTOMERGE_THRESHOLD=0.99  # Default 0.98
+export CEMS_DEDUP_LLM_THRESHOLD=0.85        # Default 0.80
+
+# Restart server
+docker compose restart cems-server
+
+# Test with manual consolidation
+cems maintenance --job consolidation --limit 100
+
+# Check logs for merge decisions
+docker compose logs cems-server | grep "Auto-merging\|LLM merge"
+```
+
+### Re-indexing takes too long
+
+**Symptoms:** Monthly re-indexing job runs for hours
+
+**Cause:** Too many memories or slow embedding API
+
+**Fix:**
+
+```bash
+# Run in batches
+cems maintenance --job reindex --limit 1000 --offset 0
+cems maintenance --job reindex --limit 1000 --offset 1000
+# etc.
+
+# Or increase timeout
+export CEMS_LLAMACPP_TIMEOUT_SECONDS=120  # Default 60
+
+# Or switch to faster embedding backend
+export CEMS_EMBEDDING_BACKEND=llamacpp_server  # Local, faster
+# Requires llama.cpp server running - see deployment docs
+```
+
+### Observation reflection producing bad summaries
+
+**Symptoms:** Reflected observations lose important details
+
+**Cause:** LLM over-compressing or hallucinating
+
+**Fix:**
+
+```bash
+# Increase MIN_OBSERVATIONS_THRESHOLD (less frequent reflection)
+# Edit src/cems/maintenance/observation_reflector.py:
+MIN_OBSERVATIONS_THRESHOLD = 20  # Default 10
+
+# Or change LLM model to more capable one
+export CEMS_LLM_MODEL=anthropic/claude-3.5-sonnet  # Default gpt-4o-mini
+
+# Rebuild and restart
+docker compose build cems-server
+docker compose up -d cems-server
+```
+
+---
+
+## Performance Issues
+
+### Slow search queries
+
+**Symptoms:** Search takes >5 seconds
+
+**Causes:**
+- Too many LLM calls (hybrid mode)
+- Large memory corpus
+- Slow embedding API
+
+**Fix:**
+
+<Tabs>
+  <Tab title="Use Vector Mode">
+    ```bash
+    # Disable query synthesis and HyDE
+    cems search "query" --mode vector
+    
+    # Or via API:
+    curl -X POST http://localhost:8765/api/memory/search \
+      -d '{"query": "...", "enable_query_synthesis": false}'
+    ```
+  </Tab>
+  
+  <Tab title="Reduce Token Budget">
+    ```bash
+    # Lower max_tokens to reduce assembly time
+    cems search "query" --max-tokens 1000  # Default 2000
+    ```
+  </Tab>
+  
+  <Tab title="Optimize Database">
+    ```bash
+    # Run VACUUM ANALYZE on postgres
+    docker compose exec postgres psql -U cems -d cems -c 'VACUUM ANALYZE;'
+    
+    # Rebuild HNSW index
+    docker compose exec postgres psql -U cems -d cems -c '
+      REINDEX INDEX memory_chunks_embedding_idx;
+    '
+    ```
+  </Tab>
+</Tabs>
+
+### High memory usage
+
+**Symptoms:** Server OOM killed or using >4GB RAM
+
+**Cause:** Large batch operations or memory leaks
+
+**Fix:**
+
+```bash
+# Reduce batch sizes
+export CEMS_EMBEDDING_BATCH_SIZE=50  # Default 100
+
+# Limit consolidation scope
+cems maintenance --job consolidation --limit 1000
+
+# Restart server periodically
+docker compose restart cems-server
+
+# Check for memory leaks
+docker stats cems-server
+```
+
+---
+
+## Getting Help
+
+<CardGroup cols={2}>
+  <Card title="GitHub Issues" icon="github" href="https://github.com/chocksy/cems/issues">
+    Report bugs or request features
+  </Card>
+  <Card title="Logs" icon="file-lines">
+    Always include logs when reporting issues:
+    ```bash
+    docker compose logs cems-server > cems-server.log
+    docker compose logs cems-mcp > cems-mcp.log
+    docker compose logs postgres > postgres.log
+    ```
+  </Card>
+</CardGroup>
+
+### Debug Mode
+
+Enable debug logging:
+
+```bash
+# In .env
+CEMS_DEBUG_MODE=true
+
+# Restart
+docker compose restart cems-server
+
+# Watch logs
+docker compose logs -f cems-server
+```
+
+### Collect Diagnostic Info
+
+```bash
+# System info
+cems --version
+cems status
+
+# Server health
+curl http://localhost:8765/health
+curl http://localhost:8766/health
+
+# Database status
+docker compose exec postgres psql -U cems -d cems -c '
+  SELECT COUNT(*) FROM memory_documents;
+  SELECT COUNT(*) FROM memory_chunks;
+  SELECT COUNT(*) FROM users;
+'
+
+# Recent logs
+docker compose logs --tail 100 cems-server
+```
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Maintenance" icon="screwdriver-wrench" href="/advanced/maintenance">
+    Optimize memory with scheduled jobs
+  </Card>
+  <Card title="Retrieval Tuning" icon="sliders" href="/advanced/retrieval-tuning">
+    Improve search quality
+  </Card>
+</CardGroup>
